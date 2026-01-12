@@ -911,15 +911,13 @@ def main():
     # Load Model (Session Aware)
     placeholder = st.empty()
     device_str = "CUDA" if torch.cuda.is_available() else "CPU"
-
-    if "sam_engine" not in st.session_state:
-        with placeholder.container():
-            with st.spinner(f"🚀 Initializing AI Engine on {device_str}..."):
-                sam = get_sam_engine(CHECKPOINT_PATH, MODEL_TYPE)
     
-    sam = st.session_state.get("sam_engine")
+    with placeholder.container():
+        with st.spinner(f"🚀 Initializing AI Engine on {device_str}..."):
+            sam = get_sam_engine(CHECKPOINT_PATH, MODEL_TYPE)
+    
     if not sam:
-        st.error("AI Engine could not be initialized.")
+        st.error("AI Engine could not be initialized. Please check if the model weights are downloaded correctly.")
         st.stop()
         
     placeholder.empty()
