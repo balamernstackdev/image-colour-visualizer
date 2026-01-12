@@ -142,10 +142,12 @@ class SegmentationEngine:
                     is_large_object = mask_coverage > 0.15 
                     
                     if is_large_object:
-                        # Auto-Switch to "Whole Object" logic for sofas/floors to prevent patchiness
-                        # BUT still apply some edge constraints if it's not explicitly Level 2
-                        # Use relaxed thresholds instead of pure ones to keep some boundaries
-                        valid_mask = ((chroma_dist < 60) & (intensity_dist < 180)).astype(np.uint8)
+                        # Even for large objects, we must check STRICT limits to prevent white-on-white leaks.
+                        # We use the same strict thresholds as Fine Detail to ensure walls don't leak into cabinets.
+                        if is_grayscale_seed:
+                            valid_mask = (intensity_dist < 70).astype(np.uint8)
+                        else:
+                            valid_mask = ((chroma_dist < 28) & (intensity_dist < 110)).astype(np.uint8)
                     else:
                         # Keep STRICT logic for walls and cabinets
                         if is_grayscale_seed:
@@ -167,10 +169,9 @@ class SegmentationEngine:
                     if level == 0:
                          k_size = (9, 9)
                     else:
-                         # Force SHARP (5,5) blur even for large objects in Auto-Detect
-                         # This stops large walls from leaking into adjacent walls/ceilings.
-                         # We only trust loose blur if user EXPLICITLY chose Fine Detail (level=0).
-                         k_size = (5, 5)
+                         # Use PROVEN (9,9) blur for Auto-Detect to match Fine Detail behavior
+                         # The user confirmed Fine Detail works best, so we adopt its structural vision.
+                         k_size = (9, 9)
                     
                     edge_gray = cv2.GaussianBlur(cv2.cvtColor(self.image_rgb, cv2.COLOR_RGB2GRAY), k_size, 0)
                     
@@ -184,8 +185,8 @@ class SegmentationEngine:
                     abs_laplacian = cv2.convertScaleAbs(laplacian)
                     edges = cv2.addWeighted(sobel_edges, 0.7, abs_laplacian, 0.3, 0)
                     
-                    # Fine Detail uses 45, Optimized uses 50 (Tightened from 60)
-                    e_thresh = 45 if level == 0 else 50
+                    # Fine Detail uses 45, Optimized (Auto-Detect) now also uses 45 to match
+                    e_thresh = 45 
                     _, edge_barrier = cv2.threshold(edges, e_thresh, 255, cv2.THRESH_BINARY_INV)
                     edge_barrier = (edge_barrier / 255).astype(np.uint8)
                     
