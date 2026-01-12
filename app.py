@@ -2,6 +2,7 @@ import streamlit as st
 import numpy as np
 import torch
 import threading
+import time
 import pickle
 from PIL import Image
 import cv2
@@ -379,42 +380,6 @@ def render_sidebar(sam, device_str):
                         st.error(f"Failed to load project: {e}")
 
 
-        # FIX: Ensure model has image set even if we didn't just upload (e.g. after code reload)
-        if st.session_state.get("image") is not None and not sam.is_image_set:
-            lock = get_global_lock()
-            if lock.locked():
-                st.info("⌛ Image analysis is already in progress... Please wait.")
-            
-            with lock:
-                # Re-check state inside lock
-                if not sam.is_image_set:
-                    # IMPROVEMENT: Percentage-based loading for better UX
-                    prog_bar = st.progress(0, text="Starting analysis...")
-                    
-                    try:
-                        # 1. Image Prep
-                        prog_bar.progress(20, text="Preprocessing image resolution...")
-                        image_to_process = st.session_state["image"]
-                        
-                        # 2. AI Encoding (The heavy part)
-                        prog_bar.progress(40, text="AI: Mapping room geometry (This may take a moment)...")
-                        
-                        # Use torch.no_grad for speed
-                        with torch.no_grad():
-                            sam.set_image(image_to_process)
-                            
-                        # 3. Finalize
-                        # PERSISTENCE FIX: Don't clear immediately so user sees "Ready!"
-                        prog_bar.progress(90, text="Finalizing spatial index...")
-                        time.sleep(0.3) 
-                        prog_bar.progress(100, text="✅ Ready! Start painting.")
-                        time.sleep(0.5)
-                        # We leave it visible until user interacts or subsequent logical clear
-                        # prog_bar.empty() 
-                        
-                    except Exception as e:
-                        prog_bar.empty()
-                        st.error(f"Analysis Failed: {e}")
     
         # Material Section
         st.divider()
@@ -874,6 +839,32 @@ def main():
         
     # Render Sidebar & Get Context
     render_sidebar(sam, device_str)
+    
+    # CENTRALIZED LOADING: Process here specifically to show Spinner in MAIN area
+    if st.session_state["image"] is not None and not sam.is_image_set:
+        lock = get_global_lock()
+        # Create a container so we can show a nice centered spinner
+        with st.container():
+            # Add some spacing to center it vertically if needed, or just let it sit at top
+            st.write(" ")
+            st.write(" ")
+            
+            with lock:
+                try:
+                    # Professional Spinner
+                    with st.spinner("Analyzing image structure..."):
+                         # 1. Prep
+                        time.sleep(0.1) # Small delay for UI render
+                        
+                        # 2. Heavy Compute
+                        with torch.no_grad():
+                            sam.set_image(st.session_state["image"])
+                    
+                    st.rerun() # Rerun to remove loader and show tool
+                    
+                except Exception as e:
+                    st.error(f"Error analyzing image: {e}")
+                    st.stop()
     
     # Main Workflow
     if st.session_state["image"] is not None:
