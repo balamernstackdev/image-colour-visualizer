@@ -1026,7 +1026,8 @@ def main():
         scale_factor = display_width / crop_w
         
         # 3. Check for Click in Session State
-        canvas_key = f"canvas_{st.session_state['zoom_level']}_{st.session_state['pan_x']:.2f}_{st.session_state['pan_y']:.2f}"
+        # CRITICAL: This key MUST match the rendered component key exactly to capture clicks.
+        canvas_key = f"canvas_{st.session_state['render_id']}_{st.session_state['zoom_level']}_{st.session_state['pan_x']:.2f}_{st.session_state['pan_y']:.2f}"
         input_value = st.session_state.get(canvas_key)
         
         if input_value is not None:
