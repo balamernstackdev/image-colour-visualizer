@@ -87,6 +87,67 @@ class SegmentationEngine:
             
             # Ensure mask is uint8 for OpenCV
             mask_uint8 = (best_mask * 255).astype(np.uint8)
+            # --- SMART COLOR SAFETY CHECK ---
+            # Re-enabled with Chromaticity Logic to fix Leaking AND Shadows.
+            if hasattr(self, 'image_rgb'):
+                cx, cy = int(point_coords[0][0]), int(point_coords[0][1])
+                h, w = self.image_rgb.shape[:2]
+                cx, cy = max(0, min(cx, w-1)), max(0, min(cy, h-1))
+                
+                # Sample Seed
+                seed_color = self.image_rgb[cy, cx].astype(np.float32)
+                
+                # Check if seed is Grayscale (Saturation check)
+                seed_mean = np.mean(seed_color)
+                seed_sat = np.max(seed_color) - np.min(seed_color)
+                is_grayscale_seed = seed_sat < 20 # Low saturation
+                
+                # 1. Chromaticity (Color only, invariant to brightness/shadows)
+                # Add epsilon to prevent div by zero
+                img_f = self.image_rgb.astype(np.float32) + 1.0
+                seed_f = seed_color + 1.0
+                
+                img_sum = np.sum(img_f, axis=2, keepdims=True)
+                seed_sum = np.sum(seed_f)
+                
+                # Normalized r, g (b is redundant)
+                img_chroma = img_f[:, :, :2] / img_sum
+                seed_chroma = seed_f[:2] / seed_sum
+                
+                # Color Distance (Manhattan is fast and effective)
+                chroma_dist = np.sum(np.abs(img_chroma - seed_chroma), axis=2)
+                
+                # 2. Intensity (Brightness)
+                # We need this to differentiate White vs Black which have same Chroma
+                intensity_dist = np.abs(np.mean(img_f, axis=2) - np.mean(seed_f))
+                
+                # 3. Hybrid Thresholding
+                if is_grayscale_seed:
+                    # If we clicked Grey/White: Rely on brightness (prevent Black vs White leak)
+                    # Threshold 90 allows mild shadows, but stops distinct Grey vs White
+                    valid_mask = (intensity_dist < 90)
+                else:
+                    # If we clicked a Color: TRUST CHROMATICITY (Handles Shadows!)
+                    # Chroma 0.15 is generous for shadows, but rejects different hues
+                    # Loose intensity limit (200) just prevents Black hole leaks
+                    valid_mask = (chroma_dist < 0.15) & (intensity_dist < 200)
+
+                valid_mask = valid_mask.astype(np.uint8)
+                
+                # Intersect with SAM mask
+                # Check 1: Simple Intersection
+                mask_refined = (mask_uint8 & valid_mask)
+                
+                # Check 2: Connectivity (Don't keep disconnected islands)
+                # But sometimes shadows are disconnected? No, usually connected.
+                # We'll rely on the main connectivity check at the end of function.
+                
+                # Check 3: Safety Fallback
+                # If this strict check deletes >80% of the mask (e.g. complex texture), 
+                # we might want to back off... but user complained about leaks, so be strict.
+                # However, if we kill it entirely, that's bad.
+                if np.sum(mask_refined) > 50: # At least some pixels survived
+                    mask_uint8 = mask_refined
             
             # Check if the click point is actually inside the mask (it should be, but just in case)
             # We take the first point (positive click)
@@ -122,4 +183,3 @@ class SegmentationEngine:
                         best_mask = (labels_im == max_label)
         
         return best_mask
-
