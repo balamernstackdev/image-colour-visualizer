@@ -136,11 +136,12 @@ class SegmentationEngine:
                         valid_mask = (intensity_dist < 70).astype(np.uint8)
                     else:
                         valid_mask = ((chroma_dist < 28) & (intensity_dist < 110)).astype(np.uint8)
-                else: # "Optimized" - BALANCED
+                else: # "Optimized" - BALANCED (Auto-Detect)
                     if is_grayscale_seed:
-                        valid_mask = (intensity_dist < 100).astype(np.uint8)
+                        # Tightened from 100 to 85 to stop leaking onto white cabinets
+                        valid_mask = (intensity_dist < 85).astype(np.uint8)
                     else:
-                        valid_mask = ((chroma_dist < 40) & (intensity_dist < 160)).astype(np.uint8)
+                        valid_mask = ((chroma_dist < 30) & (intensity_dist < 140)).astype(np.uint8)
 
                 # --- ULTRA-PRECISION EDGE GUARD (MODE-SENSITIVE) ---
                 if level == 2:
@@ -152,8 +153,9 @@ class SegmentationEngine:
                     mask_refined = (mask_refined & valid_mask)
                     edge_barrier = np.ones((h, w), dtype=np.uint8)
                 else:
-                    # HEAVY blur to ignore wall textures/wood grain but keep architectural lines
-                    edge_gray = cv2.GaussianBlur(cv2.cvtColor(self.image_rgb, cv2.COLOR_RGB2GRAY), (9,9), 0)
+                    # Sharpened blur (9x9 -> 5x5) to catch Cabinet & Cornice lines in Auto-Detect
+                    k_size = (9, 9) if level == 0 else (5, 5) 
+                    edge_gray = cv2.GaussianBlur(cv2.cvtColor(self.image_rgb, cv2.COLOR_RGB2GRAY), k_size, 0)
                     
                     grad_x = cv2.Sobel(edge_gray, cv2.CV_16S, 1, 0, ksize=3)
                     grad_y = cv2.Sobel(edge_gray, cv2.CV_16S, 0, 1, ksize=3)
@@ -165,8 +167,8 @@ class SegmentationEngine:
                     abs_laplacian = cv2.convertScaleAbs(laplacian)
                     edges = cv2.addWeighted(sobel_edges, 0.7, abs_laplacian, 0.3, 0)
                     
-                    # Fine Detail uses 45, Optimized uses 60 (to ignore even more shadow edges)
-                    e_thresh = 45 if level == 0 else 60
+                    # Fine Detail uses 45, Optimized uses 50 (Tightened from 60)
+                    e_thresh = 45 if level == 0 else 50
                     _, edge_barrier = cv2.threshold(edges, e_thresh, 255, cv2.THRESH_BINARY_INV)
                     edge_barrier = (edge_barrier / 255).astype(np.uint8)
                     
