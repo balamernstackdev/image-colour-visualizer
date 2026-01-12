@@ -433,9 +433,7 @@ def render_sidebar(sam, device_str):
                 picked_color = st.session_state["picked_sample"]
 
             # --- SIMPLIFIED FLOW ---
-            # User wants strict sequential painting: Pick Color -> Click Wall.
-            # Changing color here will NOT affect previous layers.
-            st.caption("🖌️ **Paint Mode:** Color applies to new objects only.")
+            st.caption("🖌️ **Paint Mode:** Picking Color for Next Object")
             
             # Ensure we are always in "New Object" mode implicitly for the picker
             # We do NOT update st.session_state["masks"][idx] here anymore.
