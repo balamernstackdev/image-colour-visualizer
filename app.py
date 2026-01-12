@@ -574,18 +574,19 @@ def render_sidebar(sam, device_str):
         st.subheader("⚙️ Precision")
         sens_mode = st.radio(
             "Segmentation Mode", 
-            ["Optimized (Default)", "Fine Detail (Part)", "Whole Object"], 
+            ["Auto-Detect (Smart)", "Optimized", "Fine Detail", "Whole Object"], 
             index=0,
-            horizontal=True,
-            help="🏠 **Optimized:** Best for most walls and furniture.\n\n🎯 **Fine Detail:** Use this for tight corners (wall vs ceiling). **Note:** Avoid using this on patterned rugs as it may create patches.\n\n🌐 **Whole Object:** Use this for **Rugs, Carpets and Wooden Floors**. It bridges pattern gaps to provide a solid coat."
+            horizontal=False, 
+            help="✨ **Auto-Detect:** The recommended 'Set and Forget' mode. Automatically balances precision and coverage.\n\n� **Optimized:** Good for standard walls.\n\n🎯 **Fine Detail:** Use for tricky corners.\n\n🌐 **Whole Object:** Use for Floors/Rugs."
         )
         
-        if sens_mode == "Fine Detail (Part)":
+        if "Fine Detail" in sens_mode:
             st.session_state["mask_level"] = 0
-        elif sens_mode == "Whole Object":
+        elif "Whole Object" in sens_mode:
             st.session_state["mask_level"] = 2
         else:
-            st.session_state["mask_level"] = None # Auto/Optimized
+            # Auto-Detect and Optimized both fall back to the smart heuristics (None)
+            st.session_state["mask_level"] = None 
 
         # Painting Mode Control
         st.divider()
