@@ -12,10 +12,13 @@ import logging
 import requests
 import gc
 
-# PERFORMANCE: Set CPU threading to minimum to save RAM on 1GB restricted systems.
-# Multi-threading in PyTorch on CPU can heavily spike memory for transformer models.
+# 🚀 ULTIMATE 1GB RAM PROTECTION (Step Id 974+)
+# Forcing single-threaded CPU mode prevents RAM spikes from massive stack allocations.
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
 torch.set_num_threads(1)
 torch.set_grad_enabled(False)
+torch.backends.cudnn.benchmark = False # Save more RAM
 
 from streamlit_image_coordinates import streamlit_image_coordinates
 from streamlit_image_comparison import image_comparison
@@ -331,13 +334,13 @@ def render_sidebar(sam, device_str):
                 st.session_state["image_original"] = image.copy()
                 
                 # OPTIMIZATION: Create Work Image (Preview)
-                # Lowered to 448px for ABSOLUTE stability on 1GB RAM platforms
-                max_dim = 448 
+                # Lowered to 384px for ULTIMATE survival on 1GB RAM platforms.
+                # 384 is a multiple of SAM's 64x64 patches, maintaining alignment accuracy.
+                max_dim = 384 
                 h, w = image.shape[:2]
                 if max(h, w) > max_dim:
                     scale = max_dim / max(h, w)
-                    new_w = int(w * scale)
-                    new_h = int(h * scale)
+                    new_w, new_h = int(w * scale), int(h * scale)
                     image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
                 
                 st.session_state["image"] = image
@@ -841,11 +844,11 @@ def main():
     initialize_session_state()
 
     # --- STABILITY MIGRATION ---
-    # Ensure current project respects the latest stability limits (448px)
+    # Enforcing 384px limit for strict 1GB RAM environments
     if st.session_state.get("image") is not None:
         opts_h, opts_w = st.session_state["image"].shape[:2]
-        if max(opts_h, opts_w) > 448:
-            scale = 448 / max(opts_h, opts_w)
+        if max(opts_h, opts_w) > 384:
+            scale = 384 / max(opts_h, opts_w)
             new_w, new_h = int(opts_w * scale), int(opts_h * scale)
             st.session_state["image"] = cv2.resize(st.session_state["image"], (new_w, new_h), interpolation=cv2.INTER_AREA)
             st.session_state["masks"] = [] 
@@ -947,7 +950,7 @@ def main():
             lock = get_global_lock()
             with placeholder.container():
                 st.info(f"🚀 Analyzing image structure... (This only happens once per image)")
-                with lock: # Prevent multiple tabs from hitting RAM at once
+                with lock: 
                     try:
                         import gc
                         gc.collect() 
@@ -956,11 +959,19 @@ def main():
                         work_img = st.session_state["image"].copy()
                         
                         with torch.inference_mode():
+                            # This is the heavy part. Single-threaded to keep RAM flat.
                             sam.set_image(work_img)
                         
+                        # MEMORY SALVAGE: Explicitly clear the large input tensor cache 
+                        # and wipe temporary pointers immediately.
                         del work_img
                         st.session_state["engine_img_id"] = img_id
-                        gc.collect() 
+                        
+                        # Final aggressive cleanup before yielding back to the UI
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                            
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error analyzing image: {e}")
