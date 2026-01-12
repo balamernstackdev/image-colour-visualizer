@@ -1,0 +1,960 @@
+import streamlit as st
+import numpy as np
+import torch
+import threading
+import pickle
+from PIL import Image
+import cv2
+import os
+import io
+import logging
+from streamlit_image_coordinates import streamlit_image_coordinates
+from streamlit_image_comparison import image_comparison
+from core.segmentation import SegmentationEngine, sam_model_registry
+from core.colorizer import ColorTransferEngine
+
+# --- CONFIGURATION & STYLES ---
+def setup_page():
+    st.set_page_config(
+        page_title="Color Visualizer Studio",
+        page_icon="🎨",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+
+def setup_styles():
+    st.markdown("""
+        <style>
+        /* Force Light Theme */
+        :root {
+            --primary-color: #ff4b4b;
+            --background-color: #ffffff;
+            --secondary-background-color: #f0f2f6;
+            --text-color: #31333F;
+            --font: "Segoe UI", sans-serif;
+        }
+        
+        /* Main App Background */
+        .stApp {
+            background-color: #ffffff;
+        }
+        
+        /* Sidebar Background & Text */
+        [data-testid="stSidebar"] {
+            background-color: #111111;
+            border-right: 1px solid #333333;
+        }
+        
+        /* Force White Text in Sidebar */
+        [data-testid="stSidebar"] * {
+            color: #ffffff !important;
+        }
+    
+        /* Fix Input Labels in Sidebar */
+        [data-testid="stSidebar"] label {
+            color: #e0e0e0 !important;
+        }
+        
+        /* Fix Dropdown/Input text colors if they inherit weirdly */
+        [data-testid="stSidebar"] .stSelectbox > div > div {
+            background-color: #262626;
+            color: white;
+        }
+        
+        /* Reset Global Text to Dark for Main Area Only */
+        .main .block-container h1, 
+        .main .block-container h2, 
+        .main .block-container h3, 
+        .main .block-container p, 
+        .main .block-container span, 
+        .main .block-container div {
+            color: #333333 !important;
+        }
+    
+        /* Buttons */
+        .stButton>button {
+            background-color: #ffffff;
+            color: #333333; /* Default button text dark */
+            border: 1px solid #dcdcdc;
+            border-radius: 8px;
+            transition: all 0.2s;
+        }
+        
+        /* Sidebar Buttons Specifics */
+        [data-testid="stSidebar"] .stButton>button {
+            background-color: #333333;
+            color: #ffffff;
+            border: 1px solid #555555;
+        }
+        [data-testid="stSidebar"] .stButton>button:hover {
+            background-color: #444444;
+            border-color: #666666;
+        }
+        
+        /* File Uploader */
+        [data-testid="stFileUploader"] {
+            padding: 20px;
+            border: 2px dashed #444444;
+            border-radius: 10px;
+            background-color: #1e1e1e;
+            text-align: center;
+        }
+        
+        /* Center align main landing text */
+        .landing-header {
+            text-align: center;
+            padding-top: 50px;
+            padding-bottom: 20px;
+        }
+        .landing-sub {
+            text-align: center;
+            color: #666666 !important;
+            font-size: 1.1rem;
+            margin-bottom: 40px;
+        }
+        /* Force main container to use full width */
+        .main .block-container {
+            max_width: 95% !important;
+            padding-left: 2rem !important;
+            padding-right: 2rem !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+# --- MODEL MANAGEMENT ---
+@st.cache_resource
+def get_sam_model(path, type_name):
+    """Load and cache the heavy model weights globally."""
+    if not os.path.exists(path):
+        return None
+    
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Create the model instance using the registry directly
+    model = sam_model_registry[type_name](checkpoint=path)
+    model.to(device=device)
+    return model
+
+@st.cache_resource
+def get_global_lock():
+    """Lock to prevent multiple AI sessions from hitting the CPU at once."""
+    return threading.Lock()
+
+def get_sam_engine(checkpoint_path, model_type):
+    """Get or create a session-specific engine instance."""
+    if "sam_engine" not in st.session_state:
+        # Load weights (cached globally)
+        model = get_sam_model(checkpoint_path, model_type)
+        if model is None:
+            return None
+            
+        # Create engine with pre-loaded model
+        st.session_state["sam_engine"] = SegmentationEngine(model_instance=model, device=model.device)
+        
+    return st.session_state["sam_engine"]
+
+# --- HELPER LOGIC ---
+def get_crop_params(image_width, image_height, zoom_level, pan_x, pan_y):
+    """
+    Calculate crop coordinates based on zoom and normalized pan (0.0 to 1.0).
+    """
+    if zoom_level <= 1.0:
+        return 0, 0, image_width, image_height
+
+    # visible width/height
+    view_w = int(image_width / zoom_level)
+    view_h = int(image_height / zoom_level)
+
+    # ensure pan stays within bounds
+    # pan_x=0 -> left edge, pan_x=1 -> right edge
+    max_x = image_width - view_w
+    max_y = image_height - view_h
+    
+    start_x = int(max_x * pan_x)
+    start_y = int(max_y * pan_y)
+    
+    return start_x, start_y, view_w, view_h
+
+def composite_image(original_rgb, masks_data):
+    """
+    Apply all color layers to user image using optimized multi-layer blending.
+    PERFORMANCE: Uses incremental background caching to speed up tuning.
+    """
+    # Filter only visible layers
+    visible_masks = [m for m in masks_data if m.get('visible', True)]
+    
+    # Selective Compositing Optimization
+    # If the ONLY thing that changed is the tuning parameters of the TOP-MOST layer,
+    # we can use a cached background of the previous N-1 layers.
+    if len(visible_masks) > 1:
+        # Check if we have a valid background cache
+        cache = st.session_state.get("bg_cache")
+        if cache is not None and cache.get("mask_count") == len(visible_masks) - 1:
+            # Check if all previous masks are identical to cache
+            mismatched = False
+            for i in range(len(visible_masks) - 1):
+                if not np.array_equal(visible_masks[i]['mask'], cache['masks'][i]['mask']):
+                    mismatched = True; break
+            
+            if not mismatched:
+                # Use background cache and only composite the NEWEST layer
+                background = cache['image']
+                return ColorTransferEngine.composite_multiple_layers(background, [visible_masks[-1]])
+
+    # If no cache or cache invalid, do full composite
+    result = ColorTransferEngine.composite_multiple_layers(original_rgb, visible_masks)
+    
+    # Update cache for next time
+    if len(visible_masks) > 0:
+        st.session_state["bg_cache"] = {
+            "masks": [m.copy() for m in visible_masks[:-1]],
+            "mask_count": len(visible_masks) - 1,
+            "image": ColorTransferEngine.composite_multiple_layers(original_rgb, visible_masks[:-1]) if len(visible_masks) > 1 else original_rgb.copy()
+        }
+    
+    return result
+
+def initialize_session_state():
+    """Initialize all session state variables with multi-layer safety."""
+    defaults = {
+        "image": None,          # 640px preview image
+        "image_original": None, # Full resolution original
+        "file_name": None,
+        "masks": [],
+        "zoom_level": 1.0,
+        "pan_x": 0.5,
+        "pan_y": 0.5,
+        "last_click_global": None,
+        "mask_level": None, # 0, 1, or 2 for granularity
+        "bg_cache": None,   # For selective compositing performance
+        "sampling_mode": False,
+        "composited_cache": None
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+    
+    # Extra Safety: Ensure all current masks have the latest properties 
+    # (Prevents KeyErrors after project load or code update)
+    if st.session_state.get("masks"):
+        for m in st.session_state["masks"]:
+            if 'visible' not in m: m['visible'] = True
+            if 'brightness' not in m: m['brightness'] = 0.0
+            if 'contrast' not in m: m['contrast'] = 1.0
+            if 'saturation' not in m: m['saturation'] = 1.0
+            if 'hue' not in m: m['hue'] = 0.0
+            if 'opacity' not in m: m['opacity'] = 1.0
+            if 'finish' not in m: m['finish'] = 'Standard'
+            if 'tex_rot' not in m: m['tex_rot'] = 0
+            if 'tex_scale' not in m: m['tex_scale'] = 1.0
+            if 'mask_soft' not in m: m['mask_soft'] = None
+
+# --- UI COMPONENTS ---
+def render_sidebar(sam):
+    with st.sidebar:
+        st.title("🎨 Visualizer Studio")
+        st.caption(f"Running on: {str(sam.device).upper()}")
+        
+        # Upload Section
+        uploaded_file = st.file_uploader("Start Project", type=["jpg", "png", "jpeg"], label_visibility="collapsed")
+        
+        if uploaded_file is not None:
+            # Load and set image
+            if st.session_state.get("image_path") != uploaded_file.name:
+                file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+                image = cv2.imdecode(file_bytes, 1)
+                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                
+                # Store Original
+                st.session_state["image_original"] = image.copy()
+                
+                # OPTIMIZATION: Create Work Image (Preview)
+                max_dim = 640  # Speed resolution
+                h, w = image.shape[:2]
+                if max(h, w) > max_dim:
+                    scale = max_dim / max(h, w)
+                    new_w = int(w * scale)
+                    new_h = int(h * scale)
+                    image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+                
+                st.session_state["image"] = image
+                st.session_state["image_path"] = uploaded_file.name
+                st.session_state["masks"] = []
+                st.session_state["composited_cache"] = image.copy() # Init cache
+                
+                # Reset SAM
+                sam.is_image_set = False
+                # Defer sam.set_image(image) to the lazy loading block below for perceived speed
+                # st.rerun() removed to smoother flow
+        else:
+            # Reset state if file cleared
+            if st.session_state.get("image") is not None:
+                st.session_state["image"] = None
+                st.session_state["image_original"] = None
+                st.session_state["image_path"] = None
+                st.session_state["masks"] = []
+                st.session_state["composited_cache"] = None
+                sam.is_image_set = False
+                st.rerun()
+        
+        # Project Persistence (NEW)
+        if st.session_state.get("image") is not None:
+            st.divider()
+            st.subheader("💾 Project")
+            
+            # 1. Save Project
+            project_data = {
+                "masks": st.session_state["masks"],
+                "image_path": st.session_state.get("image_path")
+            }
+            project_bytes = pickle.dumps(project_data)
+            
+            st.download_button(
+                label="📤 Export Project (.studio)",
+                data=project_bytes,
+                file_name=f"{st.session_state.get('image_path', 'project')}.studio",
+                mime="application/octet-stream",
+                use_container_width=True,
+                help="Save your current progress to a file to resume later."
+            )
+            
+            # 2. Load Project
+            loaded_proj = st.file_uploader("📥 Import Project", type=["studio"], label_visibility="collapsed")
+            if loaded_proj is not None:
+                if st.button("🚀 Load This Project", use_container_width=True):
+                    try:
+                        data = pickle.loads(loaded_proj.read())
+                        if data.get("image_path") != st.session_state.get("image_path"):
+                            st.warning("⚠️ Project file might not match this image! Coordinates could be wrong.")
+                        
+                        # Ensure all loaded masks have modern keys (back-compat)
+                        loaded_masks = data["masks"]
+                        for m in loaded_masks:
+                            if 'visible' not in m: m['visible'] = True
+                            if 'brightness' not in m: m['brightness'] = 0.0
+                            if 'contrast' not in m: m['contrast'] = 1.0
+                            if 'saturation' not in m: m['saturation'] = 1.0
+                            if 'hue' not in m: m['hue'] = 0.0
+                        
+                        st.session_state["masks"] = loaded_masks
+                        st.session_state["composited_cache"] = None
+                        st.success("Project Loaded!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to load project: {e}")
+
+
+        # FIX: Ensure model has image set even if we didn't just upload (e.g. after code reload)
+        if st.session_state.get("image") is not None and not sam.is_image_set:
+            lock = get_global_lock()
+            if lock.locked():
+                st.info("⌛ Image analysis is already in progress... Please wait.")
+            
+            with lock:
+                # Re-check state inside lock
+                if not sam.is_image_set:
+                    with st.spinner("Analyzing image structure (AI is mapping your room)..."):
+                        # Use torch.no_grad for speed
+                        with torch.no_grad():
+                            sam.set_image(st.session_state["image"])
+    
+        # Material Section
+        st.divider()
+        st.subheader("🧱 Finish Type")
+        # mat_type = st.radio("Style", ["Solid Paint", "Library", "Upload Own"], index=0, horizontal=True, label_visibility="collapsed")
+        mat_type = "Solid Paint" # Simplified for now
+        
+        selected_texture = None
+        picked_color = "#FFFFFF" # Default
+        
+        if mat_type == "Solid Paint":
+            st.caption("🎨 Choose Color")
+            col_cp_1, col_cp_2 = st.columns([1, 1])
+            preset_colors = {
+                "Sky Blue": "#87CEEB", "Royal Blue": "#4169E1", "Sage Green": "#8FBC8F",
+                "Cream": "#FFFDD0", "Terracotta": "#E2725B", "Charcoal": "#36454F", "Rose": "#FF007F"
+            }
+            with col_cp_1:
+                selected_preset = st.selectbox("Collections", list(preset_colors.keys()))
+                # if st.button("🧪 Sample from Photo", use_container_width=True, help="Click anywhere on your image to pick that exact color."):
+                #     st.session_state["sampling_mode"] = True
+                #     st.toast("Click on the image to sample a color!")
+            with col_cp_2:
+                picked_color = st.color_picker("Custom", preset_colors[selected_preset])
+                if st.session_state.get("picked_sample"):
+                    picked_color = st.session_state["picked_sample"]
+        
+        # elif mat_type == "Library":
+        #     st.caption("🧱 Choose Material")
+        #     tex_opts = {
+        #         "Oak Wood": "assets/textures/wood.png",
+        #         "White Marble": "assets/textures/marble.png",
+        #         "Red Brick": "assets/textures/brick.png",
+        #         "Wallpaper": "assets/textures/wallpaper.png"
+        #     }
+        #     tex_name = st.selectbox("Library", list(tex_opts.keys()))
+        #     if os.path.exists(tex_opts[tex_name]):
+        #         tex_img = Image.open(tex_opts[tex_name]).convert("RGB")
+        #         selected_texture = np.array(tex_img)
+        #     else:
+        #         st.warning("Texture file missing.")
+        
+        # else: # Upload Own
+        #     st.caption("📤 Upload Custom Material")
+        #     custom_tex_file = st.file_uploader("Drop image here", type=["jpg", "png", "jpeg"], key="custom_tex_uploader")
+        #     if custom_tex_file:
+        #         tex_img = Image.open(custom_tex_file).convert("RGB")
+        #         selected_texture = np.array(tex_img)
+        #     else:
+        #         st.info("Upload any image (wood, fabric, stone) to use as a material.")
+
+        # Save to state for main loop
+        st.session_state["picked_color"] = picked_color
+        st.session_state["selected_texture"] = selected_texture
+
+
+        # View Settings
+        st.divider()
+        st.subheader("👁️ View")
+        st.toggle("Compare Before/After", key="show_comparison")
+
+        # Segmentation Control (Fix for Leaks)
+        st.divider()
+        st.subheader("⚙️ Precision")
+        sens_mode = st.radio(
+            "Segmentation Mode", 
+            ["Optimized (Default)", "Fine Detail (Part)", "Whole Object"], 
+            index=0,
+            horizontal=True,
+            help="If colors leak to other areas, try 'Fine Detail'. If it doesn't cover enough, try 'Whole Object'."
+        )
+        
+        if sens_mode == "Fine Detail (Part)":
+            st.session_state["mask_level"] = 0
+        elif sens_mode == "Whole Object":
+            st.session_state["mask_level"] = 2
+        else:
+            st.session_state["mask_level"] = None # Auto/Optimized
+
+        # Painting Mode Control
+        st.divider()
+        st.caption("🖌️ Painting Mode")
+        
+        # Only show Refine option if there are layers
+        options = ["New Object"]
+        if st.session_state["masks"]:
+            options.append("Refine Last Layer")
+            
+        mode = st.radio("Mode", options, index=0, label_visibility="collapsed")
+        st.session_state["paint_mode"] = mode
+        
+        if mode == "Refine Last Layer":
+            refine_type = st.radio(
+                "Action", 
+                ["Add Area (Include)", "Subtract Area (Exclude)"], 
+                index=1, # Default to subtract as per user request
+                horizontal=True
+            )
+            st.session_state["refine_type"] = 1 if "Add" in refine_type else 0
+            st.info(f"Click on the image to {refine_type.split(' ')[0]} that area.")
+
+        
+        # Lighting & Adjustments (NEW)
+        # if st.session_state["masks"]:
+        #     st.divider()
+        #     st.subheader("💡 Layer Tuning")
+        #     # ... (commented out tuning block)
+        #     # Only need to clear bg_cache if we tuned something OTHER than the last layer
+        #     # if target_idx < len(st.session_state["masks"]) - 1:
+        #     #     st.session_state["bg_cache"] = None
+        
+        # Layer Management Section
+        st.divider()
+        st.subheader("📝 Layers")
+        
+        if st.session_state["masks"]:
+            col_undo_1, col_undo_2 = st.columns(2)
+            with col_undo_1:
+                if st.button("⏪ Undo", use_container_width=True, help="Revert last click/layer"):
+                    last_layer = st.session_state["masks"][-1]
+                    if len(last_layer.get('points', [])) > 1:
+                        # Undo last refinement point
+                        last_layer['points'].pop()
+                        last_layer['labels'].pop()
+                        # Re-generate mask for this layer
+                        with torch.no_grad():
+                            new_mask = sam.generate_mask(
+                                last_layer['points'],
+                                last_layer['labels'],
+                                level=st.session_state.get("mask_level"),
+                                cleanup=(len(last_layer['points']) == 1)
+                            )
+                            if new_mask is not None:
+                                last_layer['mask'] = new_mask
+                    else:
+                        # Remove entire layer
+                        st.session_state["masks"].pop()
+                    
+                    st.session_state["composited_cache"] = None
+                    st.session_state["bg_cache"] = None
+                    st.rerun()
+            
+            with col_undo_2:
+                if st.button("🗑️ Clear All", use_container_width=True):
+                    st.session_state["masks"] = []
+                    st.session_state["composited_cache"] = None
+                    st.session_state["bg_cache"] = None
+                    st.rerun()
+            
+            st.write("---")
+            # Iterate backwards to show newest first
+            for i in range(len(st.session_state["masks"]) - 1, -1, -1):
+                mask_data = st.session_state["masks"][i]
+                
+                with st.expander(f"Layer {i+1}: {mask_data.get('name', 'Untitled')}", expanded=(i == len(st.session_state['masks'])-1)):
+                    # Header Row: Visibility, Name, Delete
+                    h_col1, h_col2, h_col3 = st.columns([1, 4, 1], vertical_alignment="center")
+                    
+                    with h_col1:
+                        visible = st.checkbox("👁️", value=mask_data.get('visible', True), key=f"vis_{i}", label_visibility="collapsed")
+                        if visible != mask_data.get('visible', True):
+                            mask_data['visible'] = visible
+                            st.session_state["composited_cache"] = None
+                            st.rerun()
+                    
+                    with h_col2:
+                        new_name = st.text_input("Name", value=mask_data.get('name', f"Surface {i+1}"), key=f"name_{i}", label_visibility="collapsed")
+                        mask_data['name'] = new_name
+                    
+                    with h_col3:
+                        if st.button("🗑️", key=f"del_{i}", help="Delete Layer"):
+                            st.session_state["masks"].pop(i)
+                            st.session_state["composited_cache"] = None
+                            st.session_state["bg_cache"] = None
+                            st.rerun()
+
+                    # Control Row: Color Swatch, Move Up/Down
+                    c_col1, c_col2, c_col3 = st.columns([1, 1, 1])
+                    with c_col1:
+                        if mask_data.get('texture') is not None:
+                            st.markdown('🧱 Texture')
+                        else:
+                            st.markdown(
+                                f'<div style="width:100%; height:25px; background-color:{mask_data["color"]}; border-radius:4px; border:1px solid #ddd;"></div>', 
+                                unsafe_allow_html=True
+                            )
+                    
+                    with c_col2:
+                        if i < len(st.session_state["masks"]) - 1:
+                            if st.button("🔼", key=f"up_{i}", help="Move Up", use_container_width=True):
+                                st.session_state["masks"][i], st.session_state["masks"][i+1] = st.session_state["masks"][i+1], st.session_state["masks"][i]
+                                st.session_state["composited_cache"] = None
+                                st.session_state["bg_cache"] = None
+                                st.rerun()
+                    with c_col3:
+                        if i > 0:
+                            if st.button("🔽", key=f"down_{i}", help="Move Down", use_container_width=True):
+                                st.session_state["masks"][i], st.session_state["masks"][i-1] = st.session_state["masks"][i-1], st.session_state["masks"][i]
+                                st.session_state["composited_cache"] = None
+                                st.session_state["bg_cache"] = None
+                                st.rerun()
+            
+            # Redundant button removed to fix DuplicateElementId error
+        else:
+            st.caption("No active layers.")
+
+        # Download Section
+        st.divider()
+        if st.session_state["image"] is not None:
+            with st.spinner("Preparing High-Res Export..."):
+                # Scale Masks to Original Resolution
+                original_img = st.session_state["image_original"]
+                oh, ow = original_img.shape[:2]
+                wh, ww = st.session_state["image"].shape[:2]
+                
+                scale_h = oh / wh
+                scale_w = ow / ww
+                
+                # Create High-Res Mask list
+                high_res_masks = []
+                for m_data in st.session_state["masks"]:
+                    hr_m = m_data.copy()
+                    # Scale the actual boolean mask
+                    mask_uint8 = (m_data['mask'] * 255).astype(np.uint8)
+                    hr_mask_uint8 = cv2.resize(mask_uint8, (ow, oh), interpolation=cv2.INTER_LINEAR)
+                    hr_m['mask'] = hr_mask_uint8 > 127 # Threshold back to bool
+                    
+                    # PERFORMANCE FIX: Clear cached preview-sized data so it's recomputed for high-res
+                    hr_m['mask_soft'] = None 
+                    
+                    high_res_masks.append(hr_m)
+                
+                # Re-compute specifically for download to ensure fresh buffer at HIGH RES
+                # Temporarily disable bg_cache for high-res run to prevent shape mismatch
+                old_bg_cache = st.session_state.get("bg_cache")
+                st.session_state["bg_cache"] = None
+                dl_comp = composite_image(original_img, high_res_masks)
+                st.session_state["bg_cache"] = old_bg_cache # Restore for UI
+                dl_pil = Image.fromarray(dl_comp)
+                dl_buf = io.BytesIO()
+                dl_pil.save(dl_buf, format="PNG")
+                
+                st.download_button(
+                    label="💎 Download High-Res (4K)",
+                    data=dl_buf.getvalue(),
+                    file_name="pro_visualizer_design.png",
+                    mime="image/png",
+                    use_container_width=True,
+                    help="Processes your design at original resolution for maximum quality."
+                )
+            
+        return # No longer need to return picked_color
+
+def overlay_pan_controls(image):
+    """Draws semi-transparent pan arrows on the image edges."""
+    h, w, c = image.shape
+    overlay = image.copy()
+    
+    # Define color (white with transparency) and thickness
+    color = (255, 255, 255)
+    thickness = 2
+    
+    # Margin specific to display size
+    margin = 40
+    center_x, center_y = w // 2, h // 2
+    
+    # Draw Arrows
+    # Top Arrow
+    cv2.arrowedLine(overlay, (center_x, margin), (center_x, 10), color, thickness, tipLength=0.5)
+    
+    # Bottom Arrow
+    cv2.arrowedLine(overlay, (center_x, h - margin), (center_x, h - 10), color, thickness, tipLength=0.5)
+    
+    # Left Arrow
+    cv2.arrowedLine(overlay, (margin, center_y), (10, center_y), color, thickness, tipLength=0.5)
+    
+    # Right Arrow
+    cv2.arrowedLine(overlay, (w - margin, center_y), (w - 10, center_y), color, thickness, tipLength=0.5)
+    
+    # Blend overlay
+    alpha = 0.6
+    cv2.addWeighted(overlay, alpha, image, 1 - alpha, 0, image)
+    return image
+
+def render_zoom_controls():
+    """Render zoom and pan controls below the image."""
+    
+    # Shared Column Ratio for Alignment
+    # Spacer(5) | LeftBtn(1) | Center(1.5) | RightBtn(1) | Spacer(5)
+    ratio = [5, 0.8, 1.2, 0.8, 5]
+
+    # --- Zoom Row ---
+    z_col1, z_col2, z_col3, z_col4, z_col5 = st.columns(ratio, vertical_alignment="center")
+    
+    def update_zoom(delta):
+        st.session_state["zoom_level"] = max(1.0, min(4.0, st.session_state["zoom_level"] + delta))
+    
+    with z_col2:
+        if st.button("➖", help="Zoom Out", use_container_width=True):
+            update_zoom(-0.2)
+            st.rerun()
+            
+    with z_col3:
+        st.markdown(
+            f"""
+            <div style='
+                text-align: center; 
+                font-weight: bold; 
+                background-color: #f0f2f6; 
+                color: #31333F;
+                padding: 6px 10px; 
+                border-radius: 4px;
+                border: 1px solid #dcdcdc;
+            '>
+                {int(st.session_state['zoom_level'] * 100)}%
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
+            
+    with z_col4:
+        if st.button("➕", help="Zoom In", use_container_width=True):
+            update_zoom(0.2)
+            st.rerun()
+
+    # --- Reset Button ---
+    if st.session_state["zoom_level"] > 1.0 or st.session_state["pan_x"] != 0.5 or st.session_state["pan_y"] != 0.5:
+        r_col1, r_col2, r_col3 = st.columns([4, 2, 4])
+        with r_col2:
+            if st.button("🎯 Reset View", use_container_width=True):
+                st.session_state["zoom_level"] = 1.0
+                st.session_state["pan_x"] = 0.5
+                st.session_state["pan_y"] = 0.5
+                st.rerun()
+
+    # --- Pan Controls are now integrated into the image canvas ---
+
+
+def main():
+    setup_page()
+    setup_styles()
+    initialize_session_state()
+    
+    # Load Model (Session Aware)
+    model_type = "vit_b"
+    checkpoint_path = f"weights/sam_{model_type}_01ec64.pth"
+    sam = get_sam_engine(checkpoint_path, model_type)
+    
+    if not sam:
+        st.error("Model weights not found. Please run `download_weights.py`.")
+        st.stop()
+        
+    # Render Sidebar & Get Context
+    render_sidebar(sam)
+    
+    # Main Workflow
+    if st.session_state["image"] is not None:
+        
+        # --- PRE-PROCESS INPUTS (Optimization: Handle clicks BEFORE rendering to avoid double-run) --- 
+        # Force resize if current image is large (migration for optimization)
+        if st.session_state["image"] is not None:
+            opts_h, opts_w = st.session_state["image"].shape[:2]
+            if max(opts_h, opts_w) > 640:
+                # Downscale immediately
+                scale = 640 / max(opts_h, opts_w)
+                new_w = int(opts_w * scale)
+                new_h = int(opts_h * scale)
+                st.session_state["image"] = cv2.resize(st.session_state["image"], (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+                # We must also clear masks because they won't match dimensions anymore
+                st.session_state["masks"] = []
+                st.session_state["composited_cache"] = None
+                sam.is_image_set = False # Force partial re-run of embedding on smaller image
+                st.rerun() # Restart with smaller image
+
+        h, w, c = st.session_state["image"].shape
+        
+        # 1. Calc Geometry (Where are we looking?)
+        start_x, start_y, view_w, view_h = get_crop_params(
+            w, h, 
+            st.session_state["zoom_level"], 
+            st.session_state["pan_x"], 
+            st.session_state["pan_y"]
+        )
+        
+        # 2. Calc Display Geometry
+        display_width = 1000 # Reduced safe width
+        # Determine crop dimensions
+        crop_w = view_w
+        crop_h = view_h
+        
+        # Calculate scale
+        scale_factor = display_width / crop_w
+        
+        # 3. Check for Click in Session State
+        canvas_key = f"canvas_{st.session_state['zoom_level']}_{st.session_state['pan_x']:.2f}_{st.session_state['pan_y']:.2f}"
+        input_value = st.session_state.get(canvas_key)
+        
+        if input_value is not None:
+            click_x_display, click_y_display = input_value["x"], input_value["y"]
+            
+            # --- Pan Logic ---
+            if st.session_state["zoom_level"] > 1.0:
+                # Need to deduce display height for pan zones
+                new_h = int(crop_h * scale_factor)
+                d_h, d_w = new_h, display_width
+                
+                margin = 50
+                step_size = 0.1 / st.session_state["zoom_level"]
+                pan_triggered = False
+                
+                if click_y_display < margin:
+                    st.session_state["pan_y"] = max(0.0, st.session_state["pan_y"] - step_size)
+                    pan_triggered = True
+                elif click_y_display > d_h - margin:
+                    st.session_state["pan_y"] = min(1.0, st.session_state["pan_y"] + step_size)
+                    pan_triggered = True
+                elif click_x_display < margin:
+                    st.session_state["pan_x"] = max(0.0, st.session_state["pan_x"] - step_size)
+                    pan_triggered = True
+                elif click_x_display > d_w - margin:
+                    st.session_state["pan_x"] = min(1.0, st.session_state["pan_x"] + step_size)
+                    pan_triggered = True
+                    
+                if pan_triggered:
+                    st.rerun()
+
+            # --- Painting Logic ---
+            # Map Display -> Global
+            local_x = int(click_x_display / scale_factor)
+            local_y = int(click_y_display / scale_factor)
+            global_click_x = start_x + local_x
+            global_click_y = start_y + local_y
+            
+            # Clamp
+            global_click_x = max(0, min(global_click_x, w - 1))
+            global_click_y = max(0, min(global_click_y, h - 1))
+            
+            click_tuple = (global_click_x, global_click_y)
+            last_click = st.session_state.get("last_click_global")
+            
+            if click_tuple != last_click:
+                st.session_state["last_click_global"] = click_tuple
+                
+                # NEW: SAMPLING MODE Logic
+                if st.session_state.get("sampling_mode"):
+                    pixel = st.session_state["image"][global_click_y, global_click_x]
+                    hex_val = '#%02x%02x%02x' % (pixel[0], pixel[1], pixel[2])
+                    st.session_state["picked_sample"] = hex_val
+                    st.session_state["sampling_mode"] = False # Reset
+                    st.toast(f"Sampled color: {hex_val}")
+                    st.rerun()
+
+                # PROCESS CLICK (No Spinner for speed)
+                mode = st.session_state.get("paint_mode", "New Object")
+                masks_state = st.session_state["masks"]
+                
+                if mode == "Refine Last Layer" and masks_state:
+                     # REFINE Logic
+                     last_layer = masks_state[-1]
+                     if 'points' not in last_layer:
+                         last_layer['points'] = [last_layer['point']]
+                         last_layer['labels'] = [1]
+                     
+                     new_label = st.session_state.get("refine_type", 0)
+                     last_layer['points'].append(click_tuple)
+                     last_layer['labels'].append(new_label)
+                     
+                     refined_mask = sam.generate_mask(
+                         last_layer['points'],
+                         last_layer['labels'],
+                         level=st.session_state.get("mask_level", None),
+                         cleanup=False
+                     )
+                     
+                     if refined_mask is not None:
+                         last_layer['mask'] = refined_mask
+                         # Invalidate cache to force redraw in next step
+                         st.session_state["composited_cache"] = None
+                else:
+                     # NEW OBJECT Logic
+                     mask = sam.generate_mask(
+                        [click_tuple],
+                        [1], 
+                        level=st.session_state.get("mask_level", None)
+                     )
+                     if mask is not None:
+                        new_layer = {
+                            'mask': mask,
+                            'mask_soft': None, # Performance Cache
+                            'color': st.session_state.get("picked_color", "#FFFFFF"),
+                            'texture': st.session_state.get("selected_texture"),
+                            'brightness': 0.0,
+                            'contrast': 1.0,
+                            'saturation': 1.0,
+                            'hue': 0.0,
+                            'opacity': 1.0,
+                            'finish': 'Standard',
+                            'tex_rot': 0,
+                            'tex_scale': 1.0,
+                            'point': click_tuple,
+                            'points': [click_tuple],
+                            'labels': [1],
+                            'visible': True,
+                            'name': f"Surface {len(st.session_state['masks'])+1}"
+                        }
+                        st.session_state["masks"].append(new_layer)
+                        # Invalidate cache to force redraw in next step
+                        st.session_state["composited_cache"] = None
+                        st.session_state["bg_cache"] = None # Reset optimization cache
+
+
+        # 1. Prepare Base Image (Original + Applied Colors) (Draw Phase)
+        # OPTIMIZATION: Use cached result if valid
+        if st.session_state.get("composited_cache") is None:
+             st.session_state["composited_cache"] = composite_image(st.session_state["image"], st.session_state["masks"])
+        
+        full_composited = st.session_state["composited_cache"]
+        
+        if st.session_state.get("show_comparison", False):
+            # Render Comparison Slider (Read Only)
+            st.info("👀 Comparison Mode Active. Toggle off in sidebar to edit.")
+            
+            # Ensure images are same size/type
+            img1 = st.session_state["image"] # Original
+            img2 = full_composited          # Edited
+            
+            image_comparison(
+                img1=Image.fromarray(img1),
+                img2=Image.fromarray(img2),
+                label1="Original",
+                label2="Your Design",
+                width=1000, # Match display width for consistency
+                starting_position=50,
+                show_labels=True,
+                make_responsive=True,
+                in_memory=True
+            )
+            return # Stop execution here for view mode
+
+        # 2. Apply Zoom/Crop
+        h, w, c = full_composited.shape
+        start_x, start_y, view_w, view_h = get_crop_params(
+            w, h, 
+            st.session_state["zoom_level"], 
+            st.session_state["pan_x"], 
+            st.session_state["pan_y"]
+        )
+        
+        cropped_view = full_composited[start_y:start_y+view_h, start_x:start_x+view_w]
+        
+        # 3. Interactive Display
+        # Resize for display consistency
+        display_width = 1000
+        crop_h, crop_w, _ = cropped_view.shape
+        
+        # Calculate scale to fit display layout, handling both upscale (zoom) and downscale
+        scale_factor = display_width / crop_w
+        new_h = int(crop_h * scale_factor)
+        
+        display_image = cv2.resize(cropped_view, (display_width, new_h), interpolation=cv2.INTER_LINEAR)
+        
+        # Apply overlays if zoomed
+        final_display_image = display_image.copy()
+        if st.session_state["zoom_level"] > 1.0:
+            final_display_image = overlay_pan_controls(final_display_image)
+
+        # Container for the image
+        with st.container():
+            # Dynamic key ensures component resets on view change, preventing infinite pan loops
+            canvas_key = f"canvas_{st.session_state['zoom_level']}_{st.session_state['pan_x']:.2f}_{st.session_state['pan_y']:.2f}"
+            
+            # Use explicit width to ensure coordinates match our logic (1000px)
+            # This prevents browser resizing from breaking 'Right' and 'Bottom' arrow detection
+            value = streamlit_image_coordinates(
+                Image.fromarray(final_display_image),
+                key=canvas_key,
+                width=display_width 
+            )
+
+        # 4. Zoom Controls
+        render_zoom_controls()
+
+        # 5. Handle Click Event
+        pass
+
+    else:
+        # Landing Page
+        st.markdown("""
+        <div class="landing-header">
+            <h1>Welcome to Color Visualizer</h1>
+        </div>
+        <div class="landing-sub">
+            <p>Upload a photo of your room to start experimenting with colors.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns([1,2,1])
+        with col2:
+            st.info("👈 Use the sidebar to upload an image.")
+
+if __name__ == "__main__":
+    main()
