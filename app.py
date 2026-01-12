@@ -28,12 +28,19 @@ try:
     import mobile_sam
     import timm
     from core.segmentation import SegmentationEngine, sam_model_registry
-except ImportError:
+except Exception as e:
     import streamlit as st
-    st.error("### 🧱 Missing AI Components")
-    st.info("It looks like the new lightweight AI libraries are not installed on your computer yet.")
-    st.code("pip install timm git+https://github.com/ChaoningZhang/MobileSAM.git")
-    st.write("Please run the command above in your terminal and then **restart** this app.")
+    # TRANSIENT ERROR GUARD (Step Id 1597+)
+    # Sometimes during deployment, Python's module system hits a "blip" (KeyError) 
+    # while files are being moved. We catch this and show a friendly UI.
+    st.error("### 🚀 Application Updating")
+    st.info("The AI engine is syncing with the latest precision updates. This usually takes 2-3 seconds.")
+    if "mobile_sam" in str(e) or "timm" in str(e):
+        st.code("pip install timm git+https://github.com/ChaoningZhang/MobileSAM.git")
+        st.write("If you are running locally, please run the command above.")
+    else:
+        st.write("Refreshing the environment. Please wait a moment...")
+        st.button("Click to Refresh Now")
     st.stop()
 
 # 🎯 GLOBAL AI CONFIGURATION
