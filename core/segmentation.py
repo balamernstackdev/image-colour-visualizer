@@ -127,27 +127,26 @@ class SegmentationEngine:
                 intensity_dist = np.abs(np.mean(img_u16, axis=2) - np.mean(seed_color))
                 
                 # 3. Hybrid Thresholding (ADAPTIVE BASED ON MODE)
-                if level == 2: # "Whole Object" - LOOSE
-                    valid_mask = np.ones((h, w), dtype=np.uint8) # Disable color filter for whole objects
-                elif level == 0: # "Fine Detail" - SURGICAL
-                    if is_grayscale_seed:
-                        valid_mask = (intensity_dist < 40).astype(np.uint8)
-                    else:
-                        valid_mask = ((chroma_dist < 20) & (intensity_dist < 90)).astype(np.uint8)
-                else: # "Optimized" - BALANCED
+                if level == 2: # "Whole Object" - UNLOCKED
+                    valid_mask = np.ones((h, w), dtype=np.uint8)
+                elif level == 0: # "Fine Detail" - SURGICAL BUT SHADOW-RESISTANT
+                    # Loosened intensity to handle wall shadows while keeping chroma strict for leakes
                     if is_grayscale_seed:
                         valid_mask = (intensity_dist < 70).astype(np.uint8)
                     else:
-                        valid_mask = ((chroma_dist < 35) & (intensity_dist < 140)).astype(np.uint8)
+                        valid_mask = ((chroma_dist < 28) & (intensity_dist < 110)).astype(np.uint8)
+                else: # "Optimized" - BALANCED
+                    if is_grayscale_seed:
+                        valid_mask = (intensity_dist < 100).astype(np.uint8)
+                    else:
+                        valid_mask = ((chroma_dist < 40) & (intensity_dist < 160)).astype(np.uint8)
 
                 # --- ULTRA-PRECISION EDGE GUARD (MODE-SENSITIVE) ---
                 if level == 2:
-                    # Skip edge barrier for "Whole Object" to allow painting floors/rugs
                     edge_barrier = np.ones((h, w), dtype=np.uint8)
                 else:
-                    # Detect physical lines, but ignore micro-textures (wood grain)
-                    # Heavier blur to focus on architectural lines
-                    edge_gray = cv2.GaussianBlur(cv2.cvtColor(self.image_rgb, cv2.COLOR_RGB2GRAY), (7,7), 0)
+                    # HEAVY blur to ignore wall textures/wood grain but keep architectural lines
+                    edge_gray = cv2.GaussianBlur(cv2.cvtColor(self.image_rgb, cv2.COLOR_RGB2GRAY), (9,9), 0)
                     
                     grad_x = cv2.Sobel(edge_gray, cv2.CV_16S, 1, 0, ksize=3)
                     grad_y = cv2.Sobel(edge_gray, cv2.CV_16S, 0, 1, ksize=3)
@@ -159,15 +158,16 @@ class SegmentationEngine:
                     abs_laplacian = cv2.convertScaleAbs(laplacian)
                     edges = cv2.addWeighted(sobel_edges, 0.7, abs_laplacian, 0.3, 0)
                     
-                    # Threshold lowered to 30 (more robust than 15)
-                    _, edge_barrier = cv2.threshold(edges, 30, 255, cv2.THRESH_BINARY_INV)
+                    # Fine Detail uses 45, Optimized uses 60 (to ignore even more shadow edges)
+                    e_thresh = 45 if level == 0 else 60
+                    _, edge_barrier = cv2.threshold(edges, e_thresh, 255, cv2.THRESH_BINARY_INV)
                     edge_barrier = (edge_barrier / 255).astype(np.uint8)
                     
-                    # Thicken barrier
-                    edge_barrier = cv2.erode(edge_barrier, np.ones((3, 3), np.uint8), iterations=1)
+                    # Robust barrier thickening
+                    edge_barrier = cv2.erode(edge_barrier, np.ones((3, 3), np.uint8), iterations=2)
                     
-                    # SAFETY Zone around click
-                    cv2.circle(edge_barrier, (cx, cy), 12, 1, -1)
+                    # SAFETY Zone around click (ensure paint starts smoothly)
+                    cv2.circle(edge_barrier, (cx, cy), 15, 1, -1)
 
                 # Intersect SAM mask with Adaptive Boundaries
                 mask_refined = (mask_uint8 & valid_mask & edge_barrier)
