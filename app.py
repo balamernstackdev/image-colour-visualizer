@@ -172,10 +172,23 @@ def setup_styles():
             margin-bottom: 40px;
         }
         /* Force main container to use full width */
+        /* Force main container to use full width */
         .main .block-container {
             max-width: 95% !important;
             padding-left: 2rem !important;
             padding-right: 2rem !important;
+        }
+
+        /* RESPONSIVE: Mobile Adjustments */
+        @media (max-width: 768px) {
+            .main .block-container {
+                max-width: 100% !important;
+                padding-left: 0.5rem !important;
+                padding-right: 0.5rem !important;
+            }
+            [data-testid="stSidebar"] {
+                width: 100% !important; /* Full width sidebar on mobile */
+            }
         }
 
         /* Whitelabel - Hide Streamlit elements */
@@ -1285,9 +1298,9 @@ def main():
             final_display_image = np.ascontiguousarray(final_display_image, dtype=np.uint8)
             
             # Dynamic key ensures component resets on view change, preventing infinite pan loops
-            # PERFORMANCE: Injecting st.session_state['render_id'] forces the component to REDRAW
-            # immediately when a layer is deleted or undone.
-            canvas_key = f"canvas_{st.session_state['render_id']}_{st.session_state['zoom_level']}_{st.session_state['pan_x']:.2f}_{st.session_state['pan_y']:.2f}"
+            # PERFORMANCE: Removed 'render_id' from key to prevent full component unmount/remount on color change.
+            # This fixes the "loading from top" flash. The component will still update because the image argument changes.
+            canvas_key = f"canvas_{st.session_state['zoom_level']}_{st.session_state['pan_x']:.2f}_{st.session_state['pan_y']:.2f}"
             
             try:
                 # Use explicit width to ensure coordinates match our logic (1000px)
