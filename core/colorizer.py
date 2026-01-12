@@ -109,6 +109,10 @@ class ColorTransferEngine:
             if not color_hex:
                 continue
             
+            # Shape Guard: skip masks that don't match current background size
+            if mask.shape[:2] != curr_A.shape[:2]:
+                continue
+            
             # Use software-cached soft mask
             mask_soft = data.get('mask_soft')
             if mask_soft is None:

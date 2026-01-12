@@ -197,35 +197,46 @@ def composite_image(original_rgb, masks_data):
         # Check if we have a valid background cache
         cache = st.session_state.get("bg_cache")
         if cache is not None and cache.get("mask_count") == len(visible_masks) - 1:
-            # Check if all previous masks are identical to cache
-            # STRICT CHECK: Must compare parameters (color, opacity) AND mask geometry
-            mismatched = False
-            for i in range(len(visible_masks) - 1):
-                curr = visible_masks[i]
-                cached = cache['masks'][i]
-                
-                # Check critical visual parameters
-                if (curr.get('color') != cached.get('color') or 
-                    curr.get('opacity') != cached.get('opacity') or
-                    curr.get('finish') != cached.get('finish') or
-                    curr.get('brightness') != cached.get('brightness') or
-                    curr.get('contrast') != cached.get('contrast') or
-                    curr.get('saturation') != cached.get('saturation') or
-                    curr.get('hue') != cached.get('hue') or
-                    curr.get('texture_path') != cached.get('texture_path')): # Check texture path if exists
-                    mismatched = True
-                    break
+            # SHAPE GUARD (Step Id 846+): Ensure cache matches current image resolution
+            if cache['image'].shape[:2] != original_rgb.shape[:2]:
+                mismatched = True
+            else:
+                # Check all previous masks
+                mismatched = False
+                for i in range(len(visible_masks) - 1):
+                    curr = visible_masks[i]
+                    cached = cache['masks'][i]
                     
-                # Check mask geometry (Optimization: Use ID check instead of full array comparison)
-                # Since we don't mutate mask arrays in-place, identity check is sufficient and O(1)
-                if id(curr['mask']) != id(cached['mask']):
-                    mismatched = True
-                    break
+                    # Shape check for individual mask
+                    if curr['mask'].shape[:2] != original_rgb.shape[:2]:
+                        mismatched = True
+                        break
+
+                    # Check critical visual parameters
+                    if (curr.get('color') != cached.get('color') or 
+                        curr.get('opacity') != cached.get('opacity') or
+                        curr.get('finish') != cached.get('finish') or
+                        curr.get('brightness') != cached.get('brightness') or
+                        curr.get('contrast') != cached.get('contrast') or
+                        curr.get('saturation') != cached.get('saturation') or
+                        curr.get('hue') != cached.get('hue') or
+                        curr.get('texture_path') != cached.get('texture_path')):
+                        mismatched = True
+                        break
+                        
+                    # Check mask geometry
+                    if id(curr['mask']) != id(cached['mask']):
+                        mismatched = True
+                        break
             
             if not mismatched:
                 # Use background cache and only composite the NEWEST layer
                 background = cache['image']
-                return ColorTransferEngine.composite_multiple_layers(background, [visible_masks[-1]])
+                # Extra safety: check newest layer shape
+                if visible_masks[-1]['mask'].shape[:2] == background.shape[:2]:
+                    return ColorTransferEngine.composite_multiple_layers(background, [visible_masks[-1]])
+                else:
+                    mismatched = True
 
     # If no cache or cache invalid, do full composite
     if len(visible_masks) > 1:
@@ -272,7 +283,8 @@ def initialize_session_state():
         "sampling_mode": False,
         "composited_cache": None,
         "render_id": 0, # Robust change tracking
-        "selected_layer_idx": None # Track which layer is being edited
+        "selected_layer_idx": None, # Track which layer is being edited
+        "last_export": None # High-res download buffer
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -666,6 +678,7 @@ def render_sidebar(sam, device_str):
                          if layer_color != mask_data.get('color'):
                              mask_data['color'] = layer_color
                              st.session_state["composited_cache"] = None
+                             st.session_state["last_export"] = None 
                              st.rerun()
                     # Move Up/Down Controls
                     c_col2, c_col3 = st.columns([1, 1])
@@ -691,47 +704,42 @@ def render_sidebar(sam, device_str):
 
         # Download Section
         st.divider()
-        if st.session_state["image"] is not None:
-            with st.spinner("Preparing High-Res Export..."):
-                # Scale Masks to Original Resolution
-                original_img = st.session_state["image_original"]
-                oh, ow = original_img.shape[:2]
-                wh, ww = st.session_state["image"].shape[:2]
-                
-                scale_h = oh / wh
-                scale_w = ow / ww
-                
-                # Create High-Res Mask list
-                high_res_masks = []
-                for m_data in st.session_state["masks"]:
-                    hr_m = m_data.copy()
-                    # Scale the actual boolean mask
-                    mask_uint8 = (m_data['mask'] * 255).astype(np.uint8)
-                    hr_mask_uint8 = cv2.resize(mask_uint8, (ow, oh), interpolation=cv2.INTER_LINEAR)
-                    hr_m['mask'] = hr_mask_uint8 > 127 # Threshold back to bool
-                    
-                    # PERFORMANCE FIX: Clear cached preview-sized data so it's recomputed for high-res
-                    hr_m['mask_soft'] = None 
-                    
-                    high_res_masks.append(hr_m)
-                
-                # Re-compute specifically for download to ensure fresh buffer at HIGH RES
-                # Temporarily disable bg_cache for high-res run to prevent shape mismatch
-                old_bg_cache = st.session_state.get("bg_cache")
-                st.session_state["bg_cache"] = None
-                dl_comp = composite_image(original_img, high_res_masks)
-                st.session_state["bg_cache"] = old_bg_cache # Restore for UI
-                dl_pil = Image.fromarray(dl_comp)
-                dl_buf = io.BytesIO()
-                dl_pil.save(dl_buf, format="PNG")
-                
+        if st.session_state["image"] is not None and st.session_state["masks"]:
+            if st.button("💎 Prepare High-Res Download", use_container_width=True, help="Processes your design at original resolution for maximum quality."):
+                with st.spinner("Processing 4K Export..."):
+                    try:
+                        # Scale Masks to Original Resolution
+                        original_img = st.session_state["image_original"]
+                        oh, ow = original_img.shape[:2]
+                        
+                        # Create High-Res Mask list
+                        high_res_masks = []
+                        for m_data in st.session_state["masks"]:
+                            hr_m = m_data.copy()
+                            # Scale the actual boolean mask
+                            mask_uint8 = (m_data['mask'] * 255).astype(np.uint8)
+                            hr_mask_uint8 = cv2.resize(mask_uint8, (ow, oh), interpolation=cv2.INTER_LINEAR)
+                            hr_m['mask'] = hr_mask_uint8 > 127
+                            hr_m['mask_soft'] = None 
+                            high_res_masks.append(hr_m)
+                        
+                        # Use isolated Colorizer pass (Does NOT use or update bg_cache)
+                        dl_comp = ColorTransferEngine.composite_multiple_layers(original_img, high_res_masks)
+                        dl_pil = Image.fromarray(dl_comp)
+                        dl_buf = io.BytesIO()
+                        dl_pil.save(dl_buf, format="PNG")
+                        st.session_state["last_export"] = dl_buf.getvalue()
+                        st.success("✅ Download Ready!")
+                    except Exception as e:
+                        st.error(f"Export failed: {e}")
+
+            if st.session_state.get("last_export"):
                 st.download_button(
-                    label="💎 Download High-Res (4K)",
-                    data=dl_buf.getvalue(),
+                    label="📥 Save Final Image",
+                    data=st.session_state["last_export"],
                     file_name="pro_visualizer_design.png",
                     mime="image/png",
-                    use_container_width=True,
-                    help="Processes your design at original resolution for maximum quality."
+                    use_container_width=True
                 )
             
         return # No longer need to return picked_color
@@ -825,6 +833,21 @@ def main():
     setup_page()
     setup_styles()
     initialize_session_state()
+
+    # --- STABILITY MIGRATION (Step Id 846+) ---
+    # Ensure current project respects the latest stability limits (512px)
+    if st.session_state.get("image") is not None:
+        opts_h, opts_w = st.session_state["image"].shape[:2]
+        if max(opts_h, opts_w) > 512:
+            scale = 512 / max(opts_h, opts_w)
+            new_w, new_h = int(opts_w * scale), int(opts_h * scale)
+            st.session_state["image"] = cv2.resize(st.session_state["image"], (new_w, new_h), interpolation=cv2.INTER_AREA)
+            st.session_state["masks"] = [] # Critical: Reset masks as indices won't match
+            st.session_state["composited_cache"] = None
+            st.session_state["bg_cache"] = None
+            if "sam_engine" in st.session_state:
+                st.session_state["sam_engine"].is_image_set = False # Force AI re-analysis
+            st.rerun()
     
     # Render Sidebar FIRST (Instant UI)
     device_str = "CUDA" if torch.cuda.is_available() else "CPU"
@@ -945,22 +968,7 @@ def main():
     # Main Workflow
     if st.session_state["image"] is not None:
         
-        # --- PRE-PROCESS INPUTS (Optimization: Handle clicks BEFORE rendering to avoid double-run) --- 
-        # Force resize if current image is large (migration for optimization)
-        # Check against new higher limit
-        if st.session_state["image"] is not None:
-            opts_h, opts_w = st.session_state["image"].shape[:2]
-            if max(opts_h, opts_w) > 512:
-                # Downscale immediately
-                scale = 512 / max(opts_h, opts_w)
-                new_w = int(opts_w * scale)
-                new_h = int(opts_h * scale)
-                st.session_state["image"] = cv2.resize(st.session_state["image"], (new_w, new_h), interpolation=cv2.INTER_AREA)
-                # We must also clear masks because they won't match dimensions anymore
-                st.session_state["masks"] = []
-                st.session_state["composited_cache"] = None
-                sam.is_image_set = False # Force partial re-run of embedding on smaller image
-                st.rerun() # Restart with smaller image
+        # 1. Image Check is already handled in stability migration above
 
         h, w, c = st.session_state["image"].shape
         
