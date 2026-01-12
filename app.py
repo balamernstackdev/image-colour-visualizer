@@ -11,6 +11,14 @@ import io
 import logging
 import requests
 import gc
+import warnings
+
+# 🛡️ WARNING SHIELD: Silence technical chatter from AI libraries
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+# Also hide specific logs from noisy libraries
+logging.getLogger("timm").setLevel(logging.ERROR)
+logging.getLogger("mobile_sam").setLevel(logging.ERROR)
 
 # 🚀 ULTIMATE 1GB RAM PROTECTION (Step Id 974+)
 # Forcing single-threaded CPU mode prevents RAM spikes from massive stack allocations.
