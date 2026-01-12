@@ -127,8 +127,9 @@ class SegmentationEngine:
                 intensity_dist = np.abs(np.mean(img_u16, axis=2) - np.mean(seed_color))
                 
                 # 3. Hybrid Thresholding (ADAPTIVE BASED ON MODE)
-                if level == 2: # "Whole Object" - UNLOCKED
-                    valid_mask = np.ones((h, w), dtype=np.uint8)
+                if level == 2: # "Whole Object" - UNLOCKED & EXPANSIVE
+                    # Very loose color filter to allow for lighting changes across a whole floor/rug
+                    valid_mask = ((chroma_dist < 60) & (intensity_dist < 180)).astype(np.uint8)
                 elif level == 0: # "Fine Detail" - SURGICAL BUT SHADOW-RESISTANT
                     # Loosened intensity to handle wall shadows while keeping chroma strict for leakes
                     if is_grayscale_seed:
@@ -143,6 +144,12 @@ class SegmentationEngine:
 
                 # --- ULTRA-PRECISION EDGE GUARD (MODE-SENSITIVE) ---
                 if level == 2:
+                    # RUG & FLOOR PROTECTOR: Bridge gaps in patterns (rug rhombs, wood grain)
+                    # We use a large 7x7 kernel to "fill in" the holes in the texture
+                    kernel_ext = np.ones((7, 7), np.uint8)
+                    mask_refined = cv2.morphologyEx(mask_uint8, cv2.MORPH_CLOSE, kernel_ext)
+                    # For whole objects, we trust the model more and colorizer less
+                    mask_refined = (mask_refined & valid_mask)
                     edge_barrier = np.ones((h, w), dtype=np.uint8)
                 else:
                     # HEAVY blur to ignore wall textures/wood grain but keep architectural lines
@@ -170,7 +177,9 @@ class SegmentationEngine:
                     cv2.circle(edge_barrier, (cx, cy), 15, 1, -1)
 
                 # Intersect SAM mask with Adaptive Boundaries
-                mask_refined = (mask_uint8 & valid_mask & edge_barrier)
+                if level != 2:
+                    mask_refined = (mask_uint8 & valid_mask & edge_barrier)
+                # For level == 2, mask_refined was already calculated above with expansion logic
                 
                 # --- LEAK PROTECTOR: Morphological cleanup to break tiny bridges ---
                 kernel = np.ones((3, 3), np.uint8)

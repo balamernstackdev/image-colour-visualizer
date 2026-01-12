@@ -571,7 +571,7 @@ def render_sidebar(sam, device_str):
             ["Optimized (Default)", "Fine Detail (Part)", "Whole Object"], 
             index=0,
             horizontal=True,
-            help="🏠 **Optimized:** Best for most walls and furniture.\n\n🎯 **Fine Detail:** Use this for tight corners (wall vs ceiling). It has an ultra-precision barrier.\n\n🌐 **Whole Object:** Use this for **Floors, Rugs and Tiles**. It disables isolation filters to cover large textured areas."
+            help="🏠 **Optimized:** Best for most walls and furniture.\n\n🎯 **Fine Detail:** Use this for tight corners (wall vs ceiling). **Note:** Avoid using this on patterned rugs as it may create patches.\n\n🌐 **Whole Object:** Use this for **Rugs, Carpets and Wooden Floors**. It bridges pattern gaps to provide a solid coat."
         )
         
         if sens_mode == "Fine Detail (Part)":
