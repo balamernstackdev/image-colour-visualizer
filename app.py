@@ -313,8 +313,8 @@ def render_sidebar(sam, device_str):
                 st.session_state["image_original"] = image.copy()
                 
                 # OPTIMIZATION: Create Work Image (Preview)
-                # INCREASED RESOLUTION for better clarity (Step Id 70+)
-                max_dim = 1024 
+                # Lowered to 800px for stability on 1GB RAM platforms
+                max_dim = 800 
                 h, w = image.shape[:2]
                 if max(h, w) > max_dim:
                     scale = max_dim / max(h, w)
@@ -897,47 +897,46 @@ def main():
                 os.remove(checkpoint_path)
             st.stop()
 
-    sam = get_sam_engine(checkpoint_path, model_type)
-    placeholder.empty() # Clear the loading message
+    # --- ENGINE LIFECYCLE MANAGEMENT ---
+    # We store the ENGINE instance in session_state so the image embeddings (which take 5s to compute)
+    # persist across slider clicks. Re-creating the engine on every run causes "forgetting".
+    if "sam_engine" not in st.session_state:
+        engine = get_sam_engine(checkpoint_path, model_type)
+        if engine:
+            st.session_state["sam_engine"] = engine
+        else:
+            st.error(f"Failed to load engine from {checkpoint_path}")
+            st.stop()
     
-    if not sam:
-        st.error(f"Failed to load model from {checkpoint_path}. File might be corrupt.")
-        try:
-            os.remove(checkpoint_path) # Delete corrupt file so retry works next time
-        except:
-            pass
-        st.stop()
-        
+    sam = st.session_state["sam_engine"]
+    placeholder.empty()
+
     # Render Sidebar & Get Context
     render_sidebar(sam, device_str)
-    
-    # CENTRALIZED LOADING: Process here specifically to show Spinner in MAIN area
-    # Robust check: If we have flagged 'ai_ready', skip this check entirely to prevent "white screen" on reruns
-    if st.session_state["image"] is not None and not st.session_state.get("ai_ready", False):
-        if not sam.is_image_set:
-            lock = get_global_lock()
-            # Create a container so we can show a nice centered spinner
-        with st.container():
-            # Add some spacing to center it vertically if needed, or just let it sit at top
-            st.write(" ")
-            st.write(" ")
-            
-            with lock:
+
+    # CENTRALIZED LOADING: Compute embeddings if a new image is present
+    if st.session_state["image"] is not None:
+        # Check if the engine has the CURRENT image set
+        # We use id() to check if the image array has changed
+        img_id = id(st.session_state["image"])
+        if st.session_state.get("engine_img_id") != img_id:
+            with placeholder.container():
+                st.info(f"🚀 Analyzing image structure... (This only happens once per image)")
                 try:
-                    # Professional Spinner
-                    with st.spinner("Analyzing image structure..."):
-                         # 1. Prep
-                        time.sleep(0.1) # Small delay for UI render
-                        
-                        # 2. Heavy Compute
-                        with torch.no_grad():
-                            sam.set_image(st.session_state["image"])
+                    import gc
+                    gc.collect() # Free memory before heavy task
                     
-                    st.session_state["ai_ready"] = True
-                    st.rerun() # Rerun to remove loader and show tool
+                    with torch.no_grad():
+                        sam.set_image(st.session_state["image"])
                     
+                    st.session_state["engine_img_id"] = img_id
+                    gc.collect() 
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Error analyzing image: {e}")
+                    # If OOM happened, try to clear cache
+                    if "Out of memory" in str(e):
+                        torch.cuda.empty_cache()
                     st.stop()
     
     # Main Workflow
@@ -948,9 +947,9 @@ def main():
         # Check against new higher limit
         if st.session_state["image"] is not None:
             opts_h, opts_w = st.session_state["image"].shape[:2]
-            if max(opts_h, opts_w) > 1024:
+            if max(opts_h, opts_w) > 800:
                 # Downscale immediately
-                scale = 1024 / max(opts_h, opts_w)
+                scale = 800 / max(opts_h, opts_w)
                 new_w = int(opts_w * scale)
                 new_h = int(opts_h * scale)
                 st.session_state["image"] = cv2.resize(st.session_state["image"], (new_w, new_h), interpolation=cv2.INTER_AREA)
