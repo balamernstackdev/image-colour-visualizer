@@ -144,8 +144,8 @@ class SegmentationEngine:
                     if is_large_object:
                         # Auto-Switch to "Whole Object" logic for sofas/floors to prevent patchiness
                         # BUT still apply some edge constraints if it's not explicitly Level 2
-                        valid_mask = np.ones((h, w), dtype=np.uint8) 
-                        # We do NOT force level=2 here, so edge detection logic below will still run for walls.
+                        # Use relaxed thresholds instead of pure ones to keep some boundaries
+                        valid_mask = ((chroma_dist < 60) & (intensity_dist < 180)).astype(np.uint8)
                     else:
                         # Keep STRICT logic for walls and cabinets
                         if is_grayscale_seed:
