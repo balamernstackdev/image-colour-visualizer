@@ -3,7 +3,7 @@ opencv-python-headless
 numpy
 torch
 torchvision
-mobile-sam
+git+https://github.com/ChaoningZhang/MobileSAM.git
 scipy
 streamlit-image-coordinates
 streamlit-image-comparison
