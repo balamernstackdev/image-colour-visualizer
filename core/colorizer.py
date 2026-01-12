@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 from PIL import Image
+import streamlit as st
 
 class ColorTransferEngine:
     @staticmethod
@@ -69,22 +70,38 @@ class ColorTransferEngine:
         return result_uint8
 
     @staticmethod
+    @st.cache_data
+    def get_target_ab(color_hex):
+        """Pre-calculate and cache the LAB A/B channels for a hex color."""
+        rgb = ColorTransferEngine.hex_to_rgb(color_hex)
+        pixel = np.array([[[rgb[0], rgb[1], rgb[2]]]], dtype=np.uint8)
+        lab = cv2.cvtColor(pixel.astype(np.float32)/255.0, cv2.COLOR_RGB2Lab)
+        return float(lab[0, 0, 1]), float(lab[0, 0, 2])
+
+    @staticmethod
     def composite_multiple_layers(image_rgb, masks_data):
         """
-        Apply multiple colored masks in a single LAB conversion pass.
-        This is MUCH faster than sequential calls to apply_color for multiple layers.
+        High-performance multi-layer compositor.
+        Uses a single LAB merge pass and caches the expensive L channel.
         """
         if not masks_data:
             return image_rgb.copy()
 
-        # 1. Convert Base to LAB
-        img_float = image_rgb.astype(np.float32) / 255.0
-        img_lab = cv2.cvtColor(img_float, cv2.COLOR_RGB2Lab)
-        L, A, B = cv2.split(img_lab)
-
-        # Work on copies of A, B to avoid modifying original
-        curr_A = A.copy()
-        curr_B = B.copy()
+        # 1. Get Base L channel (The texture/luminosity)
+        # We cache this keyed by the base image identity to avoid heavy re-computation
+        l_cache_key = f"base_l_{id(image_rgb)}"
+        if l_cache_key not in st.session_state:
+            # First time: full conversion
+            img_f = image_rgb.astype(np.float32, copy=False) / 255.0
+            img_lab = cv2.cvtColor(img_f, cv2.COLOR_RGB2Lab)
+            L, A, B = cv2.split(img_lab)
+            st.session_state[l_cache_key] = (L, A, B)
+        
+        L, base_A, base_B = st.session_state[l_cache_key]
+        
+        # 2. Accumulate A/B changes
+        curr_A = base_A.copy()
+        curr_B = base_B.copy()
 
         for data in masks_data:
             mask = data['mask']
@@ -92,30 +109,23 @@ class ColorTransferEngine:
             if not color_hex:
                 continue
             
-            # Feather mask - PERFORMANCE CACHING
-            # We store the softened mask so we don't re-compute GaussianBlur every frame
+            # Use software-cached soft mask
             mask_soft = data.get('mask_soft')
             if mask_soft is None:
-                mask_float = mask.astype(np.float32)
-                # Use a slightly smaller kernel for speed/precision balance
-                mask_soft = cv2.GaussianBlur(mask_float, (5, 5), 0)
-                # Store it back in the data dict for next time
+                mask_soft = cv2.GaussianBlur(mask.astype(np.float32, copy=False), (5, 5), 0)
                 data['mask_soft'] = mask_soft
 
-            # Prepare Target Color A/B
-            rgb = ColorTransferEngine.hex_to_rgb(color_hex)
-            target_pixel = np.array([[[rgb[0], rgb[1], rgb[2]]]], dtype=np.uint8)
-            target_lab = cv2.cvtColor(target_pixel.astype(np.float32) / 255.0, cv2.COLOR_RGB2Lab)
-            target_a = target_lab[0, 0, 1]
-            target_b = target_lab[0, 0, 2]
+            # Get target LAB (cached for speed)
+            target_a, target_b = ColorTransferEngine.get_target_ab(color_hex)
 
-            # Blend channels
+            # Cumulative Blend
+            # Result = Target * Mask + Background * (1 - Mask)
             curr_A = (target_a * mask_soft) + (curr_A * (1.0 - mask_soft))
             curr_B = (target_b * mask_soft) + (curr_B * (1.0 - mask_soft))
 
-        # Re-merge and convert back
-        new_lab = cv2.merge([L, curr_A, curr_B])
-        final_rgb = cv2.cvtColor(new_lab, cv2.COLOR_Lab2RGB)
+        # 3. Single Re-Merge
+        final_lab = cv2.merge([L, curr_A, curr_B])
+        final_rgb = cv2.cvtColor(final_lab, cv2.COLOR_Lab2RGB)
         
         return np.clip(final_rgb * 255.0, 0, 255).astype(np.uint8)
 

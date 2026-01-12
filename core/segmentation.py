@@ -103,34 +103,28 @@ class SegmentationEngine:
                 is_grayscale_seed = seed_sat < 20 # Low saturation
                 
                 # 1. Chromaticity (Color only, invariant to brightness/shadows)
-                # Add epsilon to prevent div by zero
-                img_f = self.image_rgb.astype(np.float32) + 1.0
-                seed_f = seed_color + 1.0
+                # OPTIMIZATION: Use uint16 for distance check to avoid heavy float32 conversion
+                img_u16 = self.image_rgb.astype(np.uint16)
+                img_sum = np.sum(img_u16, axis=2, keepdims=True)
+                img_sum[img_sum == 0] = 1 # Prevent div by zero
                 
-                img_sum = np.sum(img_f, axis=2, keepdims=True)
-                seed_sum = np.sum(seed_f)
+                # We can do this on integer space or float32? 
+                # Float32 is better for precision, but let's do it faster.
+                img_chroma = (img_u16[:, :, :2] << 8) // img_sum # Fixed point shift
+                seed_chroma = (seed_color[:2].astype(np.uint16) << 8) // np.sum(seed_color + 0.1)
                 
-                # Normalized r, g (b is redundant)
-                img_chroma = img_f[:, :, :2] / img_sum
-                seed_chroma = seed_f[:2] / seed_sum
-                
-                # Color Distance (Manhattan is fast and effective)
+                # Color Distance
                 chroma_dist = np.sum(np.abs(img_chroma - seed_chroma), axis=2)
                 
                 # 2. Intensity (Brightness)
-                # We need this to differentiate White vs Black which have same Chroma
-                intensity_dist = np.abs(np.mean(img_f, axis=2) - np.mean(seed_f))
+                intensity_dist = np.abs(np.mean(img_u16, axis=2) - np.mean(seed_color))
                 
                 # 3. Hybrid Thresholding
                 if is_grayscale_seed:
-                    # If we clicked Grey/White: Rely on brightness (prevent Black vs White leak)
-                    # Threshold 90 allows mild shadows, but stops distinct Grey vs White
                     valid_mask = (intensity_dist < 90)
                 else:
-                    # If we clicked a Color: TRUST CHROMATICITY (Handles Shadows!)
-                    # Chroma 0.15 is generous for shadows, but rejects different hues
-                    # Loose intensity limit (200) just prevents Black hole leaks
-                    valid_mask = (chroma_dist < 0.15) & (intensity_dist < 200)
+                    # Chroma 38 is approx 0.15 in fixed point (0.15 * 256)
+                    valid_mask = (chroma_dist < 38) & (intensity_dist < 180)
 
                 valid_mask = valid_mask.astype(np.uint8)
                 

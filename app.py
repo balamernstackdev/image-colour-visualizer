@@ -327,6 +327,11 @@ def render_sidebar(sam, device_str):
                 st.session_state["masks"] = []
                 st.session_state["composited_cache"] = image.copy() # Init cache
                 
+                # Clear Colorizer LAB Cache for new image
+                for k in list(st.session_state.keys()):
+                    if k.startswith("base_l_"):
+                        del st.session_state[k]
+                
                 # Reset SAM
                 sam.is_image_set = False
                 st.session_state["ai_ready"] = False
@@ -394,7 +399,7 @@ def render_sidebar(sam, device_str):
         # Material Section
         st.divider()
         st.subheader("🧱 Finish Type")
-        mat_type = st.radio("Style", ["Solid Paint", "Library", "Upload Own"], index=0, horizontal=True, label_visibility="collapsed")
+        mat_type = st.radio("Style", ["Solid Paint"], index=0, horizontal=True, label_visibility="collapsed")
         
         selected_texture = None
         picked_color = "#FFFFFF" # Default
@@ -424,9 +429,13 @@ def render_sidebar(sam, device_str):
             preset_changed = (st.session_state["last_preset_val"] != selected_preset)
             st.session_state["last_preset_val"] = selected_preset
 
-            # 3. If preset didn't just change, try to respect the current active layer's color
-            # 3. If preset didn't just change, keep the last picked color
-            if not preset_changed and st.session_state.get("picked_color"):
+            # 3. Smart Reset: If the user explicitly selects a NEW preset, 
+            # we assume they want to paint a NEW object.
+            if preset_changed:
+                 st.session_state["selected_layer_idx"] = None
+                 st.session_state["picked_color"] = preset_colors[selected_preset]
+                 default_picker_val = preset_colors[selected_preset]
+            elif st.session_state.get("picked_color"):
                  default_picker_val = st.session_state["picked_color"]
 
             with col_cp_2:
@@ -437,61 +446,53 @@ def render_sidebar(sam, device_str):
             if st.session_state.get("picked_sample"):
                 picked_color = st.session_state["picked_sample"]
 
-            # --- ACTIVE LAYER LOGIC ---
+            # Save state for next run
+            st.session_state["picked_color"] = picked_color
+
+            # --- LIVE TWEAKING ---
             idx = st.session_state.get("selected_layer_idx")
             if idx is not None and 0 <= idx < len(st.session_state["masks"]):
-                # WE HAVE AN ACTIVE LAYER -> Color changes apply to IT (Tweaking)
-                # But we give the user a way to "Finish" it so they can pick a NEW color for the NEXT one.
-                
-                st.caption(f"✏️ Editing **Surface {idx+1}**")
-                
-                # Apply Color Change
+                st.info(f"✨ **Live Tweak:** Surface {idx+1}")
                 last_layer = st.session_state["masks"][idx]
                 if last_layer.get("color") != picked_color:
                      last_layer["color"] = picked_color
-                     # Invalidate cache so it redraws with new color in this same run
                      st.session_state["composited_cache"] = None 
                      st.session_state["render_id"] += 1
-                
-                if st.button("✅ Done / Start New", use_container_width=True):
-                    st.session_state["selected_layer_idx"] = None
-                    st.rerun()
             else:
-                 # NO ACTIVE LAYER -> Picking color for future click
                  st.caption("🖌️ **Paint Mode:** Picking Color for Next Object")
 
 
         
-        elif mat_type == "Library":
-            st.caption("🧱 Choose Material")
-            # Scan directory dynamically
-            tex_dir = "assets/textures"
-            if not os.path.exists(tex_dir):
-                os.makedirs(tex_dir, exist_ok=True)
+        # elif mat_type == "Library":
+        #     st.caption("🧱 Choose Material")
+        #     # Scan directory dynamically
+        #     tex_dir = "assets/textures"
+        #     if not os.path.exists(tex_dir):
+        #         os.makedirs(tex_dir, exist_ok=True)
             
-            available_tex = [f for f in os.listdir(tex_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        #     available_tex = [f for f in os.listdir(tex_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
             
-            if not available_tex:
-                st.warning("No textures found in assets/textures/")
-            else:
-                tex_name = st.selectbox("Library", available_tex, format_func=lambda x: x.split('.')[0].replace('_', ' ').title())
-                tex_path = os.path.join(tex_dir, tex_name)
+        #     if not available_tex:
+        #         st.warning("No textures found in assets/textures/")
+        #     else:
+        #         tex_name = st.selectbox("Library", available_tex, format_func=lambda x: x.split('.')[0].replace('_', ' ').title())
+        #         tex_path = os.path.join(tex_dir, tex_name)
                 
-                # Show preview
-                st.image(tex_path, width=100)
+        #         # Show preview
+        #         st.image(tex_path, width=100)
                 
-                tex_img = Image.open(tex_path).convert("RGB")
-                selected_texture = np.array(tex_img)
+        #         tex_img = Image.open(tex_path).convert("RGB")
+        #         selected_texture = np.array(tex_img)
         
-        else: # Upload Own
-            st.caption("📤 Upload Custom Material")
-            custom_tex_file = st.file_uploader("Drop image here", type=["jpg", "png", "jpeg"], key="custom_tex_uploader")
-            if custom_tex_file:
-                tex_img = Image.open(custom_tex_file).convert("RGB")
-                selected_texture = np.array(tex_img)
-                st.image(tex_img, width=100)
-            else:
-                st.info("Upload any image (wood, fabric, stone) to use as a material.")
+        # else: # Upload Own
+        #     st.caption("📤 Upload Custom Material")
+        #     custom_tex_file = st.file_uploader("Drop image here", type=["jpg", "png", "jpeg"], key="custom_tex_uploader")
+        #     if custom_tex_file:
+        #         tex_img = Image.open(custom_tex_file).convert("RGB")
+        #         selected_texture = np.array(tex_img)
+        #         st.image(tex_img, width=100)
+        #     else:
+        #         st.info("Upload any image (wood, fabric, stone) to use as a material.")
 
         # Save to state for main loop
         st.session_state["picked_color"] = picked_color
@@ -630,6 +631,7 @@ def render_sidebar(sam, device_str):
                 
                 with st.expander(f"Layer {i+1}: {mask_data.get('name', 'Untitled')}", expanded=(i == len(st.session_state['masks'])-1)):
                     # Header Row: Visibility, Name, Delete
+                    # Header Row: Visibility, Name, Delete
                     h_col1, h_col2, h_col3 = st.columns([1, 4, 1], vertical_alignment="center")
                     
                     with h_col1:
@@ -640,26 +642,33 @@ def render_sidebar(sam, device_str):
                             st.rerun()
                     
                     with h_col2:
-                        new_name = st.text_input("Name", value=mask_data.get('name', f"Surface {i+1}"), key=f"name_{i}", label_visibility="collapsed")
-                        mask_data['name'] = new_name
+                        st.write(f"**{mask_data.get('name', f'Surface {i+1}')}**")
                     
                     with h_col3:
                         if st.button("🗑️", key=f"del_{i}", help="Delete Layer"):
                             st.session_state["masks"].pop(i)
+                            st.session_state["selected_layer_idx"] = None # Reset selection
                             st.session_state["composited_cache"] = None
                             st.session_state["bg_cache"] = None
                             st.rerun()
 
-                    # Control Row: Color Swatch, Move Up/Down
-                    c_col1, c_col2, c_col3 = st.columns([1, 1, 1])
+                    # Control Row: Select Hub
+                    c_col1, c_col2 = st.columns([1, 1])
                     with c_col1:
-                        if mask_data.get('texture') is not None:
-                            st.markdown('🧱 Texture')
-                        else:
-                            st.markdown(
-                                f'<div style="width:100%; height:25px; background-color:{mask_data["color"]}; border-radius:4px; border:1px solid #ddd;"></div>', 
-                                unsafe_allow_html=True
-                            )
+                        if st.button("🎯 Tweak", key=f"tweak_{i}", use_container_width=True):
+                            st.session_state["selected_layer_idx"] = i
+                            if mask_data.get("color"):
+                                 st.session_state["picked_color"] = mask_data["color"]
+                            st.rerun()
+                    
+                    with c_col2:
+                         layer_color = st.color_picker("Color", mask_data.get('color', '#FFFFFF'), key=f"cp_{i}", label_visibility="collapsed")
+                         if layer_color != mask_data.get('color'):
+                             mask_data['color'] = layer_color
+                             st.session_state["composited_cache"] = None
+                             st.rerun()
+                    # Move Up/Down Controls
+                    c_col2, c_col3 = st.columns([1, 1])
                     
                     with c_col2:
                         if i < len(st.session_state["masks"]) - 1:
@@ -838,23 +847,54 @@ def main():
     # Actually Load
     # AUTO-HEAL: If model is missing (e.g. on new deployment), download it now.
     if not os.path.exists(checkpoint_path):
-        st.warning("⚠️ Model weights not found. Downloading automatically... (approx 375MB)")
+        st.warning("⚠️ Model weights not found on server. Downloading now... (approx 375MB)")
         
         # Ensure directory exists
         os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
         
         url = "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
         try:
-            with st.spinner("Downloading AI Model... This only happens once."):
-                response = requests.get(url, stream=True)
-                response.raise_for_status()
-                with open(checkpoint_path, "wb") as f:
-                    for chunk in response.iter_content(chunk_size=8192): 
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            response = requests.get(url, stream=True)
+            total_size = int(response.headers.get('content-length', 0))
+            
+            if total_size == 0:
+                st.error("Could not determine file size. Server might be down.")
+                st.stop()
+                
+            downloaded = 0
+            # Increase chunk size for faster download (1MB)
+            chunk_size = 1024 * 1024 
+            
+            with open(checkpoint_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if chunk:
                         f.write(chunk)
-            st.success("✅ Model downloaded successfully!")
+                        downloaded += len(chunk)
+                        # Percent calc
+                        percent = min(1.0, downloaded / total_size)
+                        progress_bar.progress(percent)
+                        status_text.text(f"📥 Downloaded {downloaded//(1024*1024)}MB / {total_size//(1024*1024)}MB...")
+            
+            status_text.text("✅ Download complete! Verifying...")
+            
+            # Verify size (Check if file is at least 300MB)
+            if os.path.getsize(checkpoint_path) < 300 * 1024 * 1024:
+                 st.error("Download incomplete or corrupt. Please refresh the page.")
+                 os.remove(checkpoint_path)
+                 st.stop()
+                 
+            st.success("✅ Model weights verified. Loading AI into memory...")
             time.sleep(1)
+            progress_bar.empty()
+            status_text.empty()
+            
         except Exception as e:
             st.error(f"❌ Failed to download model: {e}")
+            if os.path.exists(checkpoint_path):
+                os.remove(checkpoint_path)
             st.stop()
 
     sam = get_sam_engine(checkpoint_path, model_type)
