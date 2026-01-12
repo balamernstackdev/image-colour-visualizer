@@ -9,6 +9,7 @@ import cv2
 import os
 import io
 import logging
+import requests
 from streamlit_image_coordinates import streamlit_image_coordinates
 from streamlit_image_comparison import image_comparison
 from core.segmentation import SegmentationEngine, sam_model_registry
@@ -41,25 +42,28 @@ def setup_styles():
         }
         
         /* Sidebar Background & Text */
+        /* Sidebar - Professional Light */
         [data-testid="stSidebar"] {
-            background-color: #111111;
-            border-right: 1px solid #333333;
+            background-color: #f8f9fa !important; 
+            border-right: 1px solid #e6e6e6;
         }
         
-        /* Force White Text in Sidebar */
-        [data-testid="stSidebar"] * {
-            color: #ffffff !important;
-        }
-    
-        /* Fix Input Labels in Sidebar */
+        /* Sidebar Text Color */
+        [data-testid="stSidebar"] h1, 
+        [data-testid="stSidebar"] h2, 
+        [data-testid="stSidebar"] h3, 
+        [data-testid="stSidebar"] p, 
+        [data-testid="stSidebar"] span, 
+        [data-testid="stSidebar"] div,
         [data-testid="stSidebar"] label {
-            color: #e0e0e0 !important;
+            color: #31333F !important;
         }
-        
-        /* Fix Dropdown/Input text colors if they inherit weirdly */
+
+        /* Sidebar Inputs - Standardize */
         [data-testid="stSidebar"] .stSelectbox > div > div {
-            background-color: #262626;
-            color: white;
+            background-color: #ffffff;
+            color: #31333F;
+            border-color: #dcdcdc;
         }
         
         /* Reset Global Text to Dark for Main Area Only */
@@ -83,21 +87,21 @@ def setup_styles():
         
         /* Sidebar Buttons Specifics */
         [data-testid="stSidebar"] .stButton>button {
-            background-color: #333333;
-            color: #ffffff;
-            border: 1px solid #555555;
+            background-color: #ffffff;
+            color: #333333;
+            border: 1px solid #dcdcdc;
         }
         [data-testid="stSidebar"] .stButton>button:hover {
-            background-color: #444444;
-            border-color: #666666;
+            background-color: #f0f0f0;
+            border-color: #bbbbbb;
         }
         
         /* File Uploader */
         [data-testid="stFileUploader"] {
             padding: 20px;
-            border: 2px dashed #444444;
+            border: 2px dashed #cccccc;
             border-radius: 10px;
-            background-color: #1e1e1e;
+            background-color: #ffffff;
             text-align: center;
         }
         
@@ -266,6 +270,7 @@ def initialize_session_state():
         "bg_cache": None,   # For selective compositing performance
         "sampling_mode": False,
         "composited_cache": None,
+        "render_id": 0, # Robust change tracking
         "selected_layer_idx": None # Track which layer is being edited
     }
     for key, value in defaults.items():
@@ -814,11 +819,36 @@ def main():
     checkpoint_path = f"weights/sam_{model_type}_01ec64.pth"
     
     # Actually Load
+    # AUTO-HEAL: If model is missing (e.g. on new deployment), download it now.
+    if not os.path.exists(checkpoint_path):
+        st.warning("⚠️ Model weights not found. Downloading automatically... (approx 375MB)")
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+        
+        url = "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
+        try:
+            with st.spinner("Downloading AI Model... This only happens once."):
+                response = requests.get(url, stream=True)
+                response.raise_for_status()
+                with open(checkpoint_path, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=8192): 
+                        f.write(chunk)
+            st.success("✅ Model downloaded successfully!")
+            time.sleep(1)
+        except Exception as e:
+            st.error(f"❌ Failed to download model: {e}")
+            st.stop()
+
     sam = get_sam_engine(checkpoint_path, model_type)
     placeholder.empty() # Clear the loading message
     
     if not sam:
-        st.error("Model weights not found. Please run `download_weights.py`.")
+        st.error(f"Failed to load model from {checkpoint_path}. File might be corrupt.")
+        try:
+            os.remove(checkpoint_path) # Delete corrupt file so retry works next time
+        except:
+            pass
         st.stop()
         
     # Render Sidebar & Get Context
@@ -1012,6 +1042,7 @@ def main():
                         # Invalidate cache to force redraw in next step
                         st.session_state["composited_cache"] = None
                         st.session_state["bg_cache"] = None # Reset optimization cache
+                        st.session_state["render_id"] += 1
 
 
         # 1. Prepare Base Image (Original + Applied Colors) (Draw Phase)
@@ -1059,15 +1090,31 @@ def main():
         crop_h, crop_w, _ = cropped_view.shape
         
         # Calculate scale to fit display layout, handling both upscale (zoom) and downscale
-        scale_factor = display_width / crop_w
-        new_h = int(crop_h * scale_factor)
         
-        display_image = cv2.resize(cropped_view, (display_width, new_h), interpolation=cv2.INTER_LINEAR)
+        # PERFORMANCE: Cache Display Image to prevent unnecessary re-processing/flicker
+        current_disp_params = (
+            st.session_state["render_id"], 
+            st.session_state["zoom_level"], 
+            st.session_state["pan_x"], 
+            st.session_state["pan_y"]
+        )
         
-        # Apply overlays if zoomed
-        final_display_image = display_image.copy()
-        if st.session_state["zoom_level"] > 1.0:
-            final_display_image = overlay_pan_controls(final_display_image)
+        if st.session_state.get("last_disp_params") != current_disp_params:
+            # Recompute Display Image
+            scale_factor = display_width / crop_w
+            new_h = int(crop_h * scale_factor)
+            
+            display_image = cv2.resize(cropped_view, (display_width, new_h), interpolation=cv2.INTER_LINEAR)
+            
+            if st.session_state["zoom_level"] > 1.0:
+                display_image = overlay_pan_controls(display_image)
+            
+            st.session_state["cached_display_image"] = display_image
+            st.session_state["last_disp_params"] = current_disp_params
+            st.session_state["last_scale_factor"] = scale_factor
+        
+        final_display_image = st.session_state["cached_display_image"]
+        scale_factor = st.session_state["last_scale_factor"]
 
         # Container for the image
         with st.container():

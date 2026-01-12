@@ -160,8 +160,8 @@ class SegmentationEngine:
                     
                     # Threshold: Allow variation for shading (60), but cut off distinct colors (>60)
                     # If it's "Whole Object", we allow more variation (80)
-                    # UPDATED: Set Level 2 to 250 (Disable Check) to trust SAM for full walls (Fixes highlights/shadows cutting)
-                    safety_thresh = 250 if level == 2 else 100
+                    # UPDATED: Set Level 2 to 250 (Disable Check), Default to 150 (More tolerant)
+                    safety_thresh = 250 if level == 2 else 150
                     
                     valid_color_mask = (dist_mask < safety_thresh).astype(np.uint8)
                     
