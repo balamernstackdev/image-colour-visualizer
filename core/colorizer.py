@@ -187,14 +187,19 @@ class ColorTransferEngine:
         """
         image_rgb = image_rgb.astype(np.uint8)
         
-        # 1. PERFORMANCE: Use cached soft mask if available
+        # 1. Setup Input Data
+        img_float = image_rgb.astype(np.float32) / 255.0
+        gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
+        gray_3ch = np.stack([gray]*3, axis=-1)
+
+        # 2. PERFORMANCE: Use cached soft mask if available
         if mask_soft is None:
             mask_float = mask.astype(np.float32)
             mask_soft = cv2.GaussianBlur(mask_float, (3, 3), 0)
 
         mask_3ch = np.stack([mask_soft] * 3, axis=-1)
         
-        # 2. Tile and Transform Texture
+        # 3. Tile and Transform Texture
         h, w, c = image_rgb.shape
         
         # Rotate/Scale the texture source
@@ -228,12 +233,13 @@ class ColorTransferEngine:
             tex_lab = cv2.merge([tL, tA, tB])
             tiled_texture = (cv2.cvtColor(tex_lab, cv2.COLOR_Lab2RGB) * 255).astype(np.uint8)
 
-        # 3. Blend texture with original luminosity (Texture over luminance)
+        # 4. Blend texture with original luminosity (Texture over luminance)
         # Using a soft overlay style blending
+        tex_float = tiled_texture.astype(np.float32) / 255.0 # Ensure tex_float is up to date
         blended = tex_float * (gray_3ch * 1.2) 
         blended = np.clip(blended, 0, 1.0)
         
-        # 4. Composite
+        # 5. Composite
         final_mask = mask_3ch * opacity
         output = (blended * final_mask) + (img_float * (1.0 - final_mask))
         

@@ -190,10 +190,28 @@ def composite_image(original_rgb, masks_data):
         cache = st.session_state.get("bg_cache")
         if cache is not None and cache.get("mask_count") == len(visible_masks) - 1:
             # Check if all previous masks are identical to cache
+            # STRICT CHECK: Must compare parameters (color, opacity) AND mask geometry
             mismatched = False
             for i in range(len(visible_masks) - 1):
-                if not np.array_equal(visible_masks[i]['mask'], cache['masks'][i]['mask']):
-                    mismatched = True; break
+                curr = visible_masks[i]
+                cached = cache['masks'][i]
+                
+                # Check critical visual parameters
+                if (curr.get('color') != cached.get('color') or 
+                    curr.get('opacity') != cached.get('opacity') or
+                    curr.get('finish') != cached.get('finish') or
+                    curr.get('brightness') != cached.get('brightness') or
+                    curr.get('contrast') != cached.get('contrast') or
+                    curr.get('saturation') != cached.get('saturation') or
+                    curr.get('hue') != cached.get('hue') or
+                    curr.get('texture_path') != cached.get('texture_path')): # Check texture path if exists
+                    mismatched = True
+                    break
+                    
+                # Check mask geometry (expensive, do last)
+                if not np.array_equal(curr['mask'], cached['mask']):
+                    mismatched = True
+                    break
             
             if not mismatched:
                 # Use background cache and only composite the NEWEST layer
@@ -201,17 +219,33 @@ def composite_image(original_rgb, masks_data):
                 return ColorTransferEngine.composite_multiple_layers(background, [visible_masks[-1]])
 
     # If no cache or cache invalid, do full composite
-    result = ColorTransferEngine.composite_multiple_layers(original_rgb, visible_masks)
-    
-    # Update cache for next time
-    if len(visible_masks) > 0:
+    if len(visible_masks) > 1:
+        # Process N-1 layers specifically to populate cache
+        bg_layers = visible_masks[:-1]
+        background = ColorTransferEngine.composite_multiple_layers(original_rgb, bg_layers)
+        
+        # Update cache
         st.session_state["bg_cache"] = {
-            "masks": [m.copy() for m in visible_masks[:-1]],
-            "mask_count": len(visible_masks) - 1,
-            "image": ColorTransferEngine.composite_multiple_layers(original_rgb, visible_masks[:-1]) if len(visible_masks) > 1 else original_rgb.copy()
+            "masks": [m.copy() for m in bg_layers],
+            "mask_count": len(bg_layers),
+            "image": background
         }
-    
-    return result
+        
+        # Composite final layer on top
+        return ColorTransferEngine.composite_multiple_layers(background, [visible_masks[-1]])
+        
+    else:
+        # 0 or 1 layer, just do it directly
+        result = ColorTransferEngine.composite_multiple_layers(original_rgb, visible_masks)
+        
+        # Update cache even for single layer to prep for the second one
+        if len(visible_masks) == 1:
+             st.session_state["bg_cache"] = {
+                "masks": [visible_masks[0].copy()],
+                "mask_count": 1,
+                "image": result 
+            }
+        return result
 
 def initialize_session_state():
     """Initialize all session state variables with multi-layer safety."""
@@ -227,7 +261,8 @@ def initialize_session_state():
         "mask_level": None, # 0, 1, or 2 for granularity
         "bg_cache": None,   # For selective compositing performance
         "sampling_mode": False,
-        "composited_cache": None
+        "composited_cache": None,
+        "selected_layer_idx": None # Track which layer is being edited
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -249,10 +284,10 @@ def initialize_session_state():
             if 'mask_soft' not in m: m['mask_soft'] = None
 
 # --- UI COMPONENTS ---
-def render_sidebar(sam):
+def render_sidebar(sam, device_str):
     with st.sidebar:
         st.title("🎨 Visualizer Studio")
-        st.caption(f"Running on: {str(sam.device).upper()}")
+        st.caption(f"Running on: {device_str}")
         
         # Upload Section
         uploaded_file = st.file_uploader("Start Project", type=["jpg", "png", "jpeg"], label_visibility="collapsed")
@@ -268,13 +303,14 @@ def render_sidebar(sam):
                 st.session_state["image_original"] = image.copy()
                 
                 # OPTIMIZATION: Create Work Image (Preview)
-                max_dim = 640  # Speed resolution
+                # INCREASED RESOLUTION for better clarity (Step Id 70+)
+                max_dim = 1024 
                 h, w = image.shape[:2]
                 if max(h, w) > max_dim:
                     scale = max_dim / max(h, w)
                     new_w = int(w * scale)
                     new_h = int(h * scale)
-                    image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+                    image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
                 
                 st.session_state["image"] = image
                 st.session_state["image_path"] = uploaded_file.name
@@ -360,52 +396,101 @@ def render_sidebar(sam):
         # Material Section
         st.divider()
         st.subheader("🧱 Finish Type")
-        # mat_type = st.radio("Style", ["Solid Paint", "Library", "Upload Own"], index=0, horizontal=True, label_visibility="collapsed")
-        mat_type = "Solid Paint" # Simplified for now
+        mat_type = st.radio("Style", ["Solid Paint", "Library", "Upload Own"], index=0, horizontal=True, label_visibility="collapsed")
         
         selected_texture = None
         picked_color = "#FFFFFF" # Default
         
         if mat_type == "Solid Paint":
             st.caption("🎨 Choose Color")
-            col_cp_1, col_cp_2 = st.columns([1, 1])
+            
             preset_colors = {
                 "Sky Blue": "#87CEEB", "Royal Blue": "#4169E1", "Sage Green": "#8FBC8F",
-                "Cream": "#FFFDD0", "Terracotta": "#E2725B", "Charcoal": "#36454F", "Rose": "#FF007F"
+                "Cream": "#FFFDD0", "Terracotta": "#E2725B", "Charcoal": "#36454F", "Rose": "#FF007F",
+                "White": "#FFFFFF", "Black": "#000000"
             }
+            
+            col_cp_1, col_cp_2 = st.columns([1, 1], vertical_alignment="bottom")
+            
             with col_cp_1:
-                selected_preset = st.selectbox("Collections", list(preset_colors.keys()))
-                # if st.button("🧪 Sample from Photo", use_container_width=True, help="Click anywhere on your image to pick that exact color."):
-                #     st.session_state["sampling_mode"] = True
-                #     st.toast("Click on the image to sample a color!")
+                selected_preset = st.selectbox("Collections", list(preset_colors.keys()), key="preset_selector")
+            
+            # Intelligent Defaulting Logic
+            # 1. Start with the preset value
+            default_picker_val = preset_colors[selected_preset]
+            
+            # 2. Check if preset actually changed (user intent override)
+            if "last_preset_val" not in st.session_state: 
+                st.session_state["last_preset_val"] = selected_preset
+            
+            preset_changed = (st.session_state["last_preset_val"] != selected_preset)
+            st.session_state["last_preset_val"] = selected_preset
+
+            # 3. If preset didn't just change, try to respect the current active layer's color
+            if not preset_changed and st.session_state["masks"]:
+                default_picker_val = st.session_state["masks"][-1].get("color", default_picker_val)
+            elif not preset_changed and st.session_state.get("picked_color"):
+                default_picker_val = st.session_state["picked_color"]
+
             with col_cp_2:
-                picked_color = st.color_picker("Custom", preset_colors[selected_preset])
-                if st.session_state.get("picked_sample"):
-                    picked_color = st.session_state["picked_sample"]
+                # The picker defaults to strictly following the active layer (if exists) or the preset
+                picked_color = st.color_picker("Custom", default_picker_val)
+                
+            # Handle Sampling override
+            if st.session_state.get("picked_sample"):
+                picked_color = st.session_state["picked_sample"]
+
+            # CRITICAL: Apply changes to Active Layer Instantly
+            # MODIFIED (Step Id 120): Only update if a layer is explicitly SELECTED
+            idx = st.session_state.get("selected_layer_idx")
+            if idx is not None and 0 <= idx < len(st.session_state["masks"]):
+                last_layer = st.session_state["masks"][idx]
+                if last_layer.get("color") != picked_color:
+                     last_layer["color"] = picked_color
+                     # Invalidate cache so it redraws with new color in this same run
+                     st.session_state["composited_cache"] = None 
+            
+            # --- SELECTION CONTROL ---
+            # Quick way to Deselect so user can pick color for NEXT object
+            if idx is not None:
+                st.caption(f"Editing: **Layer {idx+1}**")
+                if st.button("✅ Finish / Start New Object", use_container_width=True):
+                    st.session_state["selected_layer_idx"] = None
+                    st.rerun()
+            else:
+                 st.caption("🎨 Picking Color for **Next Object**")
+
         
-        # elif mat_type == "Library":
-        #     st.caption("🧱 Choose Material")
-        #     tex_opts = {
-        #         "Oak Wood": "assets/textures/wood.png",
-        #         "White Marble": "assets/textures/marble.png",
-        #         "Red Brick": "assets/textures/brick.png",
-        #         "Wallpaper": "assets/textures/wallpaper.png"
-        #     }
-        #     tex_name = st.selectbox("Library", list(tex_opts.keys()))
-        #     if os.path.exists(tex_opts[tex_name]):
-        #         tex_img = Image.open(tex_opts[tex_name]).convert("RGB")
-        #         selected_texture = np.array(tex_img)
-        #     else:
-        #         st.warning("Texture file missing.")
+        elif mat_type == "Library":
+            st.caption("🧱 Choose Material")
+            # Scan directory dynamically
+            tex_dir = "assets/textures"
+            if not os.path.exists(tex_dir):
+                os.makedirs(tex_dir, exist_ok=True)
+            
+            available_tex = [f for f in os.listdir(tex_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+            
+            if not available_tex:
+                st.warning("No textures found in assets/textures/")
+            else:
+                tex_name = st.selectbox("Library", available_tex, format_func=lambda x: x.split('.')[0].replace('_', ' ').title())
+                tex_path = os.path.join(tex_dir, tex_name)
+                
+                # Show preview
+                st.image(tex_path, width=100)
+                
+                tex_img = Image.open(tex_path).convert("RGB")
+                selected_texture = np.array(tex_img)
         
-        # else: # Upload Own
-        #     st.caption("📤 Upload Custom Material")
-        #     custom_tex_file = st.file_uploader("Drop image here", type=["jpg", "png", "jpeg"], key="custom_tex_uploader")
-        #     if custom_tex_file:
-        #         tex_img = Image.open(custom_tex_file).convert("RGB")
-        #         selected_texture = np.array(tex_img)
-        #     else:
-        #         st.info("Upload any image (wood, fabric, stone) to use as a material.")
+        else: # Upload Own
+            st.caption("📤 Upload Custom Material")
+            custom_tex_file = st.file_uploader("Drop image here", type=["jpg", "png", "jpeg"], key="custom_tex_uploader")
+            if custom_tex_file:
+                tex_img = Image.open(custom_tex_file).convert("RGB")
+                selected_texture = np.array(tex_img)
+                st.image(tex_img, width=100)
+            else:
+                st.info("Upload any image (wood, fabric, stone) to use as a material.")
 
         # Save to state for main loop
         st.session_state["picked_color"] = picked_color
@@ -459,13 +544,45 @@ def render_sidebar(sam):
 
         
         # Lighting & Adjustments (NEW)
-        # if st.session_state["masks"]:
-        #     st.divider()
-        #     st.subheader("💡 Layer Tuning")
-        #     # ... (commented out tuning block)
-        #     # Only need to clear bg_cache if we tuned something OTHER than the last layer
-        #     # if target_idx < len(st.session_state["masks"]) - 1:
-        #     #     st.session_state["bg_cache"] = None
+        if st.session_state["masks"]:
+            st.divider()
+            st.subheader("💡 Layer Tuning")
+            
+            # Target the most recent layer by default
+            target_mask = st.session_state["masks"][-1]
+            
+            # Opacity
+            op = st.slider("Opacity", 0.0, 1.0, target_mask.get("opacity", 1.0), key="tune_opacity")
+            if op != target_mask.get("opacity", 1.0):
+                target_mask["opacity"] = op
+                st.session_state["bg_cache"] = None # Invalidate cache
+                st.session_state["composited_cache"] = None
+                st.rerun()
+
+            # Finish
+            finish = st.selectbox("Finish", ["Standard", "Matte", "Glossy"], index=["Standard", "Matte", "Glossy"].index(target_mask.get("finish", "Standard")), key="tune_finish")
+            if finish != target_mask.get("finish", "Standard"):
+                target_mask["finish"] = finish
+                st.session_state["bg_cache"] = None
+                st.session_state["composited_cache"] = None
+                st.rerun()
+                
+            with st.expander("Advanced color"):
+                # Brightness
+                br = st.slider("Brightness", -0.5, 0.5, target_mask.get("brightness", 0.0), key="tune_bright")
+                if br != target_mask.get("brightness", 0.0):
+                    target_mask["brightness"] = br
+                    st.session_state["bg_cache"] = None
+                    st.session_state["composited_cache"] = None
+                    st.rerun()
+                    
+                # Contrast
+                ct = st.slider("Contrast", 0.5, 1.5, target_mask.get("contrast", 1.0), key="tune_contrast")
+                if ct != target_mask.get("contrast", 1.0):
+                    target_mask["contrast"] = ct
+                    st.session_state["bg_cache"] = None
+                    st.session_state["composited_cache"] = None
+                    st.rerun()
         
         # Layer Management Section
         st.divider()
@@ -699,31 +816,49 @@ def main():
     setup_styles()
     initialize_session_state()
     
+    # Render Sidebar FIRST (Instant UI)
+    device_str = "CUDA" if torch.cuda.is_available() else "CPU"
+    
+    # We pass None for sam initially to sidebar, or refactor sidebar to not need it for basic UI
+    # Let's adjust sidebar to take device string specifically
+    
     # Load Model (Session Aware)
+    # Showing a spinner prevents the "Black Screen of Death"
+    placeholder = st.empty()
+    
+    # Check if we have the model loaded already to skip UI flicker
+    if "sam_engine" not in st.session_state:
+        with placeholder.container():
+            st.info(f"🚀 Initializing AI Engine on {device_str}... (This takes 10s on first load)")
+            
     model_type = "vit_b"
     checkpoint_path = f"weights/sam_{model_type}_01ec64.pth"
+    
+    # Actually Load
     sam = get_sam_engine(checkpoint_path, model_type)
+    placeholder.empty() # Clear the loading message
     
     if not sam:
         st.error("Model weights not found. Please run `download_weights.py`.")
         st.stop()
         
     # Render Sidebar & Get Context
-    render_sidebar(sam)
+    render_sidebar(sam, device_str)
     
     # Main Workflow
     if st.session_state["image"] is not None:
         
         # --- PRE-PROCESS INPUTS (Optimization: Handle clicks BEFORE rendering to avoid double-run) --- 
         # Force resize if current image is large (migration for optimization)
+        # Check against new higher limit
         if st.session_state["image"] is not None:
             opts_h, opts_w = st.session_state["image"].shape[:2]
-            if max(opts_h, opts_w) > 640:
+            if max(opts_h, opts_w) > 1024:
                 # Downscale immediately
-                scale = 640 / max(opts_h, opts_w)
+                scale = 1024 / max(opts_h, opts_w)
                 new_w = int(opts_w * scale)
                 new_h = int(opts_h * scale)
-                st.session_state["image"] = cv2.resize(st.session_state["image"], (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+                st.session_state["image"] = cv2.resize(st.session_state["image"], (new_w, new_h), interpolation=cv2.INTER_AREA)
                 # We must also clear masks because they won't match dimensions anymore
                 st.session_state["masks"] = []
                 st.session_state["composited_cache"] = None
@@ -862,6 +997,10 @@ def main():
                             'name': f"Surface {len(st.session_state['masks'])+1}"
                         }
                         st.session_state["masks"].append(new_layer)
+                        
+                        # Set as selected immediately for tweaking
+                        st.session_state["selected_layer_idx"] = len(st.session_state["masks"]) - 1
+                        
                         # Invalidate cache to force redraw in next step
                         st.session_state["composited_cache"] = None
                         st.session_state["bg_cache"] = None # Reset optimization cache
@@ -924,16 +1063,23 @@ def main():
 
         # Container for the image
         with st.container():
+            # Ensure explicit strict types for the component
+            final_display_image = np.ascontiguousarray(final_display_image, dtype=np.uint8)
+            
             # Dynamic key ensures component resets on view change, preventing infinite pan loops
             canvas_key = f"canvas_{st.session_state['zoom_level']}_{st.session_state['pan_x']:.2f}_{st.session_state['pan_y']:.2f}"
             
-            # Use explicit width to ensure coordinates match our logic (1000px)
-            # This prevents browser resizing from breaking 'Right' and 'Bottom' arrow detection
-            value = streamlit_image_coordinates(
-                Image.fromarray(final_display_image),
-                key=canvas_key,
-                width=display_width 
-            )
+            try:
+                # Use explicit width to ensure coordinates match our logic (1000px)
+                # This prevents browser resizing from breaking 'Right' and 'Bottom' arrow detection
+                value = streamlit_image_coordinates(
+                    Image.fromarray(final_display_image),
+                    key=canvas_key,
+                    width=display_width 
+                )
+            except Exception as e:
+                st.error(f"Display Error: {e}")
+                value = None
 
         # 4. Zoom Controls
         render_zoom_controls()
