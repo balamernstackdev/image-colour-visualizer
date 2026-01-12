@@ -848,8 +848,45 @@ def main():
     setup_styles()
     initialize_session_state()
 
+    model_type = "vit_t"
+    checkpoint_path = "weights/mobile_sam.pt"
+
+    # --- AUTO-HEAL: Download weights FIRST if missing ---
+    if not os.path.exists(checkpoint_path):
+        placeholder = st.empty()
+        with placeholder.container():
+            st.warning("⚠️ Light AI model not found. Downloading automatically... (approx 40MB)")
+            os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+            url = "https://github.com/ChaoningZhang/MobileSAM/raw/master/weights/mobile_sam.pt"
+            try:
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                response = requests.get(url, stream=True)
+                total_size = int(response.headers.get('content-length', 0))
+                downloaded = 0
+                chunk_size = 512 * 1024 
+                with open(checkpoint_path, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=chunk_size):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total_size > 0:
+                                percent = min(1.0, downloaded / total_size)
+                                progress_bar.progress(percent)
+                            status_text.text(f"📥 Downloaded {downloaded//(1024*1024)}MB...")
+                if os.path.getsize(checkpoint_path) < 35 * 1024 * 1024:
+                     st.error("Download incomplete or corrupt.")
+                     os.remove(checkpoint_path)
+                     st.stop()
+                st.success("✅ Model weights verified.")
+                time.sleep(1)
+                st.rerun() 
+            except Exception as e:
+                st.error(f"❌ Failed to download model: {e}")
+                if os.path.exists(checkpoint_path): os.remove(checkpoint_path)
+                st.stop()
+
     # --- STABILITY MIGRATION ---
-    # With MobileSAM, 640px is the new safe standard
     if st.session_state.get("image") is not None:
         opts_h, opts_w = st.session_state["image"].shape[:2]
         if max(opts_h, opts_w) > 640:
@@ -860,8 +897,7 @@ def main():
             st.session_state["composited_cache"] = None
             st.session_state["bg_cache"] = None
             sam = get_sam_engine(checkpoint_path, model_type)
-            if sam:
-                sam.is_image_set = False 
+            if sam: sam.is_image_set = False 
             st.rerun()
     
     # Render Sidebar FIRST (Instant UI)
@@ -871,76 +907,20 @@ def main():
     # Let's adjust sidebar to take device string specifically
     
     # Load Model (Session Aware)
-    # Showing a spinner prevents the "Black Screen of Death"
     placeholder = st.empty()
-    
-    # Check if we have the model loaded already to skip UI flicker
+    device_str = "CUDA" if torch.cuda.is_available() else "CPU"
+
     if "sam_engine" not in st.session_state:
         with placeholder.container():
-            with st.spinner(f"🚀 Initializing AI Engine on {device_str}... (This takes 10s on first load)"):
+            with st.spinner(f"🚀 Initializing AI Engine on {device_str}..."):
                 sam = get_sam_engine(checkpoint_path, model_type)
-            
-    model_type = "vit_t"
-    checkpoint_path = "weights/mobile_sam.pt"
     
-    # Actually Load
-    # AUTO-HEAL: If model is missing (e.g. on new deployment), download it now.
-    if not os.path.exists(checkpoint_path):
-        st.warning("⚠️ Light AI model not found. Downloading automatically... (approx 40MB)")
-        
-        # Ensure directory exists
-        os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-        
-        url = "https://github.com/ChaoningZhang/MobileSAM/raw/master/weights/mobile_sam.pt"
-        try:
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            response = requests.get(url, stream=True)
-            total_size = int(response.headers.get('content-length', 0))
-            
-            downloaded = 0
-            chunk_size = 512 * 1024 # 512KB chunks
-            
-            with open(checkpoint_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=chunk_size):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if total_size > 0:
-                            percent = min(1.0, downloaded / total_size)
-                            progress_bar.progress(percent)
-                        status_text.text(f"📥 Downloaded {downloaded//(1024*1024)}MB...")
-            
-            # Verify size (Check if file is at least 35MB)
-            if os.path.getsize(checkpoint_path) < 35 * 1024 * 1024:
-                 st.error("Download incomplete or corrupt.")
-                 os.remove(checkpoint_path)
-                 st.stop()
-                 
-            st.success("✅ Model weights verified.")
-            time.sleep(1)
-            progress_bar.empty()
-            status_text.empty()
-            st.rerun() # Refresh to trigger loading
-            
-        except Exception as e:
-            st.error(f"❌ Failed to download model: {e}")
-            if os.path.exists(checkpoint_path):
-                os.remove(checkpoint_path)
-            st.stop()
-
-    # --- ENGINE LIFECYCLE MANAGEMENT ---
-    # We store the ENGINE instance in session_state so the image embeddings (which take 5s to compute)
-    # persist across slider clicks. Re-creating the engine on every run causes "forgetting".
-    sam = get_sam_engine(checkpoint_path, model_type)
+    sam = st.session_state.get("sam_engine")
     if not sam:
-        st.error(f"Failed to load AI Engine. This might be a memory limit issue.")
+        st.error("AI Engine could not be initialized.")
         st.stop()
         
     placeholder.empty()
-
-    # Render Sidebar & Get Context
     render_sidebar(sam, device_str)
 
     # CENTRALIZED LOADING: Compute embeddings if a new image is present
