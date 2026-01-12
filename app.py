@@ -158,6 +158,12 @@ def setup_styles():
             padding-left: 2rem !important;
             padding-right: 2rem !important;
         }
+
+        /* Whitelabel - Hide Streamlit elements */
+        #MainMenu {visibility: hidden;}
+        header {visibility: hidden;}
+        footer {visibility: hidden;}
+        [data-testid="stHeader"] {display: none;}
         </style>
     """, unsafe_allow_html=True)
 
