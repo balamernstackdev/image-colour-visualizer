@@ -128,8 +128,8 @@ class SegmentationEngine:
                 
                 # 3. Hybrid Thresholding (ADAPTIVE BASED ON MODE)
                 if level == 2: # "Whole Object" - UNLOCKED & EXPANSIVE
-                    # Very loose color filter to allow for lighting changes across a whole floor/rug
-                    valid_mask = ((chroma_dist < 60) & (intensity_dist < 180)).astype(np.uint8)
+                    # Disable color/intensity limits completely to allow full coverage of shadowed walls/floors
+                    valid_mask = np.ones((h, w), dtype=np.uint8)
                 elif level == 0: # "Fine Detail" - SURGICAL BUT SHADOW-RESISTANT
                     # Loosened intensity to handle wall shadows while keeping chroma strict for leakes
                     if is_grayscale_seed:
