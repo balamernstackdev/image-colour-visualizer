@@ -588,66 +588,66 @@ def render_sidebar(sam, device_str):
             st.info(f"Click on the image to {refine_type.split(' ')[0]} that area.")
 
         
-        # Lighting & Adjustments (NEW)
-        if st.session_state["masks"]:
-            st.divider()
-            st.subheader("💡 Layer Tuning")
-            
-            # Sync with selection hub
-            idx = st.session_state.get("selected_layer_idx")
-            if idx is not None and 0 <= idx < len(st.session_state["masks"]):
-                target_mask = st.session_state["masks"][idx]
-            else:
-                target_mask = st.session_state["masks"][-1]
-            
-            # Opacity
-            op = st.slider("Opacity", 0.0, 1.0, target_mask.get("opacity", 1.0), key="tune_opacity")
-            if op != target_mask.get("opacity", 1.0):
-                target_mask["opacity"] = op
-                st.session_state["bg_cache"] = None # Invalidate cache
-                st.session_state["composited_cache"] = None
-                st.rerun()
-
-            # Finish
-            finish = st.selectbox("Finish", ["Standard", "Matte", "Glossy"], index=["Standard", "Matte", "Glossy"].index(target_mask.get("finish", "Standard")), key="tune_finish")
-            if finish != target_mask.get("finish", "Standard"):
-                target_mask["finish"] = finish
-                st.session_state["bg_cache"] = None
-                st.session_state["composited_cache"] = None
-                st.rerun()
-                
-            with st.expander("Advanced color"):
-                # Brightness
-                br = st.slider("Brightness", -0.5, 0.5, target_mask.get("brightness", 0.0), key="tune_bright")
-                if br != target_mask.get("brightness", 0.0):
-                    target_mask["brightness"] = br
-                    st.session_state["bg_cache"] = None
-                    st.session_state["composited_cache"] = None
-                    st.rerun()
-                    
-                # Contrast
-                ct = st.slider("Contrast", 0.5, 1.5, target_mask.get("contrast", 1.0), key="tune_contrast")
-                if ct != target_mask.get("contrast", 1.0):
-                    target_mask["contrast"] = ct
-                    st.session_state["bg_cache"] = None
-                    st.session_state["composited_cache"] = None
-                    st.rerun()
-
-                # Saturation
-                sat = st.slider("Saturation", 0.0, 3.0, target_mask.get("saturation", 1.0), key="tune_sat")
-                if sat != target_mask.get("saturation", 1.0):
-                    target_mask["saturation"] = sat
-                    st.session_state["bg_cache"] = None
-                    st.session_state["composited_cache"] = None
-                    st.rerun()
-
-                # Hue
-                hue = st.slider("Hue Shift", -180, 180, int(target_mask.get("hue", 0)), key="tune_hue")
-                if hue != target_mask.get("hue", 0):
-                    target_mask["hue"] = float(hue)
-                    st.session_state["bg_cache"] = None
-                    st.session_state["composited_cache"] = None
-                    st.rerun()
+        # Lighting & Adjustments (Hidden to avoid interruption)
+        # if st.session_state["masks"]:
+        #     st.divider()
+        #     st.subheader("💡 Layer Tuning")
+        #     
+        #     # Sync with selection hub
+        #     idx = st.session_state.get("selected_layer_idx")
+        #     if idx is not None and 0 <= idx < len(st.session_state["masks"]):
+        #         target_mask = st.session_state["masks"][idx]
+        #     else:
+        #         target_mask = st.session_state["masks"][-1]
+        #     
+        #     # Opacity
+        #     op = st.slider("Opacity", 0.0, 1.0, target_mask.get("opacity", 1.0), key="tune_opacity")
+        #     if op != target_mask.get("opacity", 1.0):
+        #         target_mask["opacity"] = op
+        #         st.session_state["bg_cache"] = None # Invalidate cache
+        #         st.session_state["composited_cache"] = None
+        #         st.rerun()
+        # 
+        #     # Finish
+        #     finish = st.selectbox("Finish", ["Standard", "Matte", "Glossy"], index=["Standard", "Matte", "Glossy"].index(target_mask.get("finish", "Standard")), key="tune_finish")
+        #     if finish != target_mask.get("finish", "Standard"):
+        #         target_mask["finish"] = finish
+        #         st.session_state["bg_cache"] = None
+        #         st.session_state["composited_cache"] = None
+        #         st.rerun()
+        #         
+        #     with st.expander("Advanced color"):
+        #         # Brightness
+        #         br = st.slider("Brightness", -0.5, 0.5, target_mask.get("brightness", 0.0), key="tune_bright")
+        #         if br != target_mask.get("brightness", 0.0):
+        #             target_mask["brightness"] = br
+        #             st.session_state["bg_cache"] = None
+        #             st.session_state["composited_cache"] = None
+        #             st.rerun()
+        #             
+        #         # Contrast
+        #         ct = st.slider("Contrast", 0.5, 1.5, target_mask.get("contrast", 1.0), key="tune_contrast")
+        #         if ct != target_mask.get("contrast", 1.0):
+        #             target_mask["contrast"] = ct
+        #             st.session_state["bg_cache"] = None
+        #             st.session_state["composited_cache"] = None
+        #             st.rerun()
+        # 
+        #         # Saturation
+        #         sat = st.slider("Saturation", 0.0, 3.0, target_mask.get("saturation", 1.0), key="tune_sat")
+        #         if sat != target_mask.get("saturation", 1.0):
+        #             target_mask["saturation"] = sat
+        #             st.session_state["bg_cache"] = None
+        #             st.session_state["composited_cache"] = None
+        #             st.rerun()
+        # 
+        #         # Hue
+        #         hue = st.slider("Hue Shift", -180, 180, int(target_mask.get("hue", 0)), key="tune_hue")
+        #         if hue != target_mask.get("hue", 0):
+        #             target_mask["hue"] = float(hue)
+        #             st.session_state["bg_cache"] = None
+        #             st.session_state["composited_cache"] = None
+        #             st.rerun()
         
         # Layer Management Section
         st.divider()
