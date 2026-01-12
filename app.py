@@ -575,10 +575,10 @@ def render_sidebar(sam, device_str):
         with st.expander("⚙️ Advanced Precision (Optional)"):
             sens_mode = st.radio(
                 "Segmentation Mode", 
-                ["Auto-Detect (Smart)", "Optimized", "Fine Detail", "Whole Object"], 
+                ["Fine Detail (Default)", "Optimized", "Whole Object"], 
                 index=0,
                 horizontal=False, 
-                help="✨ **Auto-Detect:** The recommended 'Set and Forget' mode. Automatically balances precision and coverage.\n\n🏠 **Optimized:** Good for standard walls.\n\n🎯 **Fine Detail:** Use for tricky corners.\n\n🌐 **Whole Object:** Use for Floors/Rugs."
+                help="🎯 **Fine Detail:** The new default. Best for walls and ceilings with precise edges.\n\n🏠 **Optimized:** Good for standard surfaces.\n\n🌐 **Whole Object:** Use for Floors/Rugs."
             )
             
             if "Fine Detail" in sens_mode:
@@ -586,7 +586,7 @@ def render_sidebar(sam, device_str):
             elif "Whole Object" in sens_mode:
                 st.session_state["mask_level"] = 2
             else:
-                # Auto-Detect and Optimized both fall back to the smart heuristics (None)
+                # Optimized falls back to the smart heuristics (None)
                 st.session_state["mask_level"] = None 
 
         # Painting Mode Control

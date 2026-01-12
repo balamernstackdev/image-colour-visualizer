@@ -130,25 +130,18 @@ class SegmentationEngine:
                 if level == 2: # "Whole Object" - UNLOCKED & EXPANSIVE
                     # Disable color/intensity limits completely to allow full coverage of shadowed walls/floors
                     valid_mask = np.ones((h, w), dtype=np.uint8)
-                elif level == 0: # "Fine Detail" - SURGICAL BUT SHADOW-RESISTANT
-                    # Loosened intensity to handle wall shadows while keeping chroma strict for leakes
+                elif level == 0: # "Fine Detail" (NOW DEFAULT) - SURGICAL
+                    # Slightly relaxed Intensity (70->90, 110->130) to fix "breaking colors" around lights
                     if is_grayscale_seed:
-                        valid_mask = (intensity_dist < 70).astype(np.uint8)
+                        valid_mask = (intensity_dist < 90).astype(np.uint8)
                     else:
-                        valid_mask = ((chroma_dist < 28) & (intensity_dist < 110)).astype(np.uint8)
-                else: # "Optimized" - BALANCED (Auto-Detect)
-                    # CONTEXT AWARE (Step Id 1860+): Check if object is Large (Sofa/Floor) or Small (Wall/Cabinet)
-                    mask_coverage = np.sum(best_mask) / (h * w)
-                    is_large_object = mask_coverage > 0.15 
-                    
-                    
-                    # UNIVERSAL STRICTNESS (Step Id 1988+): 
-                    # We removed the 'Large Object' relaxation entirely.
-                    # Auto-Detect now ALWAYS enforces the strictest 'Fine Detail' limits.
+                        valid_mask = ((chroma_dist < 28) & (intensity_dist < 130)).astype(np.uint8)
+                else: # "Optimized" - BALANCED
+                    # Same relaxed logic for consistency
                     if is_grayscale_seed:
-                        valid_mask = (intensity_dist < 70).astype(np.uint8)
+                        valid_mask = (intensity_dist < 100).astype(np.uint8)
                     else:
-                        valid_mask = ((chroma_dist < 28) & (intensity_dist < 110)).astype(np.uint8)
+                        valid_mask = ((chroma_dist < 30) & (intensity_dist < 140)).astype(np.uint8)
 
                 # --- ULTRA-PRECISION EDGE GUARD (MODE-SENSITIVE) ---
                 if level == 2:
