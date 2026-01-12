@@ -71,12 +71,12 @@ class ColorTransferEngine:
 
     @staticmethod
     @st.cache_data
-    def get_target_lab(color_hex):
-        """Pre-calculate and cache the LAB L/A/B channels for a hex color."""
+    def get_target_ab(color_hex):
+        """Pre-calculate and cache the LAB A/B channels for a hex color."""
         rgb = ColorTransferEngine.hex_to_rgb(color_hex)
         pixel = np.array([[[rgb[0], rgb[1], rgb[2]]]], dtype=np.uint8)
         lab = cv2.cvtColor(pixel.astype(np.float32)/255.0, cv2.COLOR_RGB2Lab)
-        return float(lab[0, 0, 0]), float(lab[0, 0, 1]), float(lab[0, 0, 2])
+        return float(lab[0, 0, 1]), float(lab[0, 0, 2])
 
     @staticmethod
     def composite_multiple_layers(image_rgb, masks_data):
@@ -99,8 +99,7 @@ class ColorTransferEngine:
         
         L, base_A, base_B = st.session_state[l_cache_key]
         
-        # 2. Accumulate L, A, and B changes separately
-        curr_L = L.copy()
+        # 2. Accumulate A/B changes
         curr_A = base_A.copy()
         curr_B = base_B.copy()
 
@@ -114,82 +113,22 @@ class ColorTransferEngine:
             if mask.shape[:2] != curr_A.shape[:2]:
                 continue
             
-            opacity = data.get('opacity', 1.0)
-            if opacity <= 0:
-                continue
+            # Use software-cached soft mask
+            mask_soft = data.get('mask_soft')
+            if mask_soft is None:
+                mask_soft = cv2.GaussianBlur(mask.astype(np.float32, copy=False), (5, 5), 0)
+                data['mask_soft'] = mask_soft
 
-            # Performance: Compute soft mask on-the-fly (Fast on 448px)
-            mask_soft = cv2.GaussianBlur(mask.astype(np.float32, copy=False), (5, 5), 0)
-            mask_effective = mask_soft * opacity
-
-            # --- Target Color (L/A/B) ---
-            target_l, target_a, target_b = ColorTransferEngine.get_target_lab(color_hex)
-            
-            # Hue & Saturation Adjustments (Vector math in A/B space)
-            sat = data.get('saturation', 1.0)
-            hue_deg = data.get('hue', 0.0)
-            
-            if sat != 1.0 or hue_deg != 0.0:
-                # Saturation scaling
-                target_a *= sat
-                target_b *= sat
-                
-                # Hue rotation
-                if hue_deg != 0:
-                    angle = np.deg2rad(hue_deg)
-                    cos_a = np.cos(angle)
-                    sin_a = np.sin(angle)
-                    new_a = target_a * cos_a - target_b * sin_a
-                    new_b = target_a * sin_a + target_b * cos_a
-                    target_a, target_b = new_a, new_b
-
-            # --- Target Lightness (L) ---
-            brightness = data.get('brightness', 0.0) * 80.0 # Scale to LAB range
-            contrast = data.get('contrast', 1.0)
-            finish = data.get('finish', 'Standard')
-            
-            layer_L = L.copy()
-            
-            # --- UNIVERSAL COLOR COVERAGE (Step Id 1515+) ---
-            # Handles all colors from pure White to pure Black by pivoting the 
-            # Lightness (L) channel. 65 is the average "Safe Paint" midpoint.
-            coverage_factor = 0.75 # How much the new color "covers" the old one
-            l_pivot = 65.0
-            
-            # Shift the base L channel toward the target color's L
-            # result = original * (1-coverage) + target * coverage
-            layer_L = (L * (1.0 - coverage_factor)) + (target_l * coverage_factor)
-            
-            # Re-apply some original contrast/texture details to prevent "flat sticker" look
-            layer_L = layer_L + (L - np.mean(L)) * 0.3 
-
-            # Apply Manual Contrast & Brightness
-            if contrast != 1.0:
-                layer_L = l_pivot + (layer_L - l_pivot) * contrast
-            
-            if brightness != 0:
-                layer_L += brightness
-                
-            # --- PROFESSIONAL FINISH STYLES ---
-            if finish == "Matte":
-                # Create a soft, diffused look by compressing the dynamic range
-                layer_L = l_pivot + (layer_L - l_pivot) * 0.8
-                layer_L -= 5.0 # Slightly darker/flatter
-            elif finish == "Glossy":
-                # Deepen shadows and pop highlights for luxury feel
-                layer_L = l_pivot + (layer_L - l_pivot) * 1.25
-                layer_L += 2.0 # Slight brightness pop
-            
-            layer_L = np.clip(layer_L, 0, 100)
+            # Get target LAB (cached for speed)
+            target_a, target_b = ColorTransferEngine.get_target_ab(color_hex)
 
             # Cumulative Blend
             # Result = Target * Mask + Background * (1 - Mask)
-            curr_L = (layer_L * mask_effective) + (curr_L * (1.0 - mask_effective))
-            curr_A = (target_a * mask_effective) + (curr_A * (1.0 - mask_effective))
-            curr_B = (target_b * mask_effective) + (curr_B * (1.0 - mask_effective))
+            curr_A = (target_a * mask_soft) + (curr_A * (1.0 - mask_soft))
+            curr_B = (target_b * mask_soft) + (curr_B * (1.0 - mask_soft))
 
         # 3. Single Re-Merge
-        final_lab = cv2.merge([curr_L, curr_A, curr_B])
+        final_lab = cv2.merge([L, curr_A, curr_B])
         final_rgb = cv2.cvtColor(final_lab, cv2.COLOR_Lab2RGB)
         
         return np.clip(final_rgb * 255.0, 0, 255).astype(np.uint8)
