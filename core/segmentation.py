@@ -128,32 +128,41 @@ class SegmentationEngine:
                 
                 # 3. Hybrid Thresholding
                 if is_grayscale_seed:
-                    valid_mask = (intensity_dist < 50) # Strict for white/gray surfaces
+                    # Tightened from 50 to 40 for surgical precision on white-on-white corners
+                    valid_mask = (intensity_dist < 40) 
                 else:
-                    valid_mask = (chroma_dist < 25) & (intensity_dist < 100)
+                    # Tightened (20, 90) to prevent leakage between similar wall colors
+                    valid_mask = (chroma_dist < 20) & (intensity_dist < 90)
 
                 valid_mask = valid_mask.astype(np.uint8)
                 
-                # --- EDGE BOUNDARY GUARD (Step Id 1532+) ---
-                # Detect physical corners/edges to prevent leaking onto ceilings
-                gray = cv2.cvtColor(self.image_rgb, cv2.COLOR_RGB2GRAY)
-                # Sensitive Sobel to catch faint architectural lines
+                # --- ULTRA-PRECISION EDGE GUARD ---
+                # Detect even the faintest physical lines where wall meets ceiling
+                gray = cv2.GaussianBlur(cv2.cvtColor(self.image_rgb, cv2.COLOR_RGB2GRAY), (3,3), 0)
+                
+                # Use both Sobel and Laplacian for 360-degree boundary detection
                 grad_x = cv2.Sobel(gray, cv2.CV_16S, 1, 0, ksize=3)
                 grad_y = cv2.Sobel(gray, cv2.CV_16S, 0, 1, ksize=3)
                 abs_grad_x = cv2.convertScaleAbs(grad_x)
                 abs_grad_y = cv2.convertScaleAbs(grad_y)
-                edges = cv2.addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0)
+                sobel_edges = cv2.addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0)
                 
-                # Create a binary "Edge Barrier" (Lowered threshold from 40 to 25 for faint lines)
-                _, edge_barrier = cv2.threshold(edges, 25, 255, cv2.THRESH_BINARY_INV)
+                laplacian = cv2.Laplacian(gray, cv2.CV_16S, ksize=3)
+                abs_laplacian = cv2.convertScaleAbs(laplacian)
+                
+                # Combine edges for maximum boundary detection
+                edges = cv2.addWeighted(sobel_edges, 0.7, abs_laplacian, 0.3, 0)
+                
+                # Create a binary "Edge Barrier" (Lowered to 15 for ultra-faint lines)
+                _, edge_barrier = cv2.threshold(edges, 15, 255, cv2.THRESH_BINARY_INV)
                 edge_barrier = (edge_barrier / 255).astype(np.uint8)
                 
-                # SAFETY: Ensure the click point itself is never blocked by an edge
-                cx, cy = int(point_coords[0][0]), int(point_coords[0][1])
-                cv2.circle(edge_barrier, (cx, cy), 5, 1, -1)
-                
-                # Thicken the barrier slightly to prevent diagonal leakage
+                # Thicken the barrier to block 1-pixel diagonal leaks
                 edge_barrier = cv2.erode(edge_barrier, np.ones((3, 3), np.uint8), iterations=1)
+                
+                # SAFETY: Ensure the click point itself is never blocked by an edge shield
+                cx, cy = int(point_coords[0][0]), int(point_coords[0][1])
+                cv2.circle(edge_barrier, (cx, cy), 8, 1, -1)
 
                 # Intersect SAM mask with both Color and Edge boundaries
                 mask_refined = (mask_uint8 & valid_mask & edge_barrier)
