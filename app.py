@@ -571,7 +571,7 @@ def render_sidebar(sam, device_str):
             ["Optimized (Default)", "Fine Detail (Part)", "Whole Object"], 
             index=0,
             horizontal=True,
-            help="🏠 **Optimized:** Best for most walls.\n\n🎯 **Fine Detail:** Use this if colors leak onto the ceiling or cabinets. It respects corners much strictly.\n\n🌐 **Whole Object:** Use this for large continuous areas."
+            help="🏠 **Optimized:** Best for most walls and furniture.\n\n🎯 **Fine Detail:** Use this for tight corners (wall vs ceiling). It has an ultra-precision barrier.\n\n🌐 **Whole Object:** Use this for **Floors, Rugs and Tiles**. It disables isolation filters to cover large textured areas."
         )
         
         if sens_mode == "Fine Detail (Part)":
