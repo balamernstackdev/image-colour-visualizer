@@ -963,8 +963,12 @@ def main():
     # --- STABILITY MIGRATION ---
     if st.session_state.get("image") is not None:
         opts_h, opts_w = st.session_state["image"].shape[:2]
-        if max(opts_h, opts_w) > 640:
-            scale = 640 / max(opts_h, opts_w)
+        # HD RESOLUTION UNLOCK (Step Id 1779+)
+        # We upped this from 640 -> 1024 to support 360-degree/Panoramic images.
+        # Wide images need more pixels to resolve wall edges (straight, right, left, back).
+        limit = 1024 
+        if max(opts_h, opts_w) > limit:
+            scale = limit / max(opts_h, opts_w)
             new_w, new_h = int(opts_w * scale), int(opts_h * scale)
             st.session_state["image"] = cv2.resize(st.session_state["image"], (new_w, new_h), interpolation=cv2.INTER_AREA)
             st.session_state["masks"] = [] 
