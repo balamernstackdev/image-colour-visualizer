@@ -71,12 +71,12 @@ class ColorTransferEngine:
 
     @staticmethod
     @st.cache_data
-    def get_target_ab(color_hex):
-        """Pre-calculate and cache the LAB A/B channels for a hex color."""
+    def get_target_lab(color_hex):
+        """Pre-calculate and cache the LAB L/A/B channels for a hex color."""
         rgb = ColorTransferEngine.hex_to_rgb(color_hex)
         pixel = np.array([[[rgb[0], rgb[1], rgb[2]]]], dtype=np.uint8)
         lab = cv2.cvtColor(pixel.astype(np.float32)/255.0, cv2.COLOR_RGB2Lab)
-        return float(lab[0, 0, 1]), float(lab[0, 0, 2])
+        return float(lab[0, 0, 0]), float(lab[0, 0, 1]), float(lab[0, 0, 2])
 
     @staticmethod
     def composite_multiple_layers(image_rgb, masks_data):
@@ -122,8 +122,8 @@ class ColorTransferEngine:
             mask_soft = cv2.GaussianBlur(mask.astype(np.float32, copy=False), (5, 5), 0)
             mask_effective = mask_soft * opacity
 
-            # --- Target Color (A/B) ---
-            target_a, target_b = ColorTransferEngine.get_target_ab(color_hex)
+            # --- Target Color (L/A/B) ---
+            target_l, target_a, target_b = ColorTransferEngine.get_target_lab(color_hex)
             
             # Hue & Saturation Adjustments (Vector math in A/B space)
             sat = data.get('saturation', 1.0)
@@ -150,21 +150,35 @@ class ColorTransferEngine:
             
             layer_L = L.copy()
             
-            # Apply Contrast (Centered at mid-point 128/2 in float space or 50 in LAB)
-            if contrast != 1.0:
-                layer_L = 50.0 + (layer_L - 50.0) * contrast
+            # --- UNIVERSAL COLOR COVERAGE (Step Id 1515+) ---
+            # Handles all colors from pure White to pure Black by pivoting the 
+            # Lightness (L) channel. 65 is the average "Safe Paint" midpoint.
+            coverage_factor = 0.75 # How much the new color "covers" the old one
+            l_pivot = 65.0
             
-            # Apply Brightness
+            # Shift the base L channel toward the target color's L
+            # result = original * (1-coverage) + target * coverage
+            layer_L = (L * (1.0 - coverage_factor)) + (target_l * coverage_factor)
+            
+            # Re-apply some original contrast/texture details to prevent "flat sticker" look
+            layer_L = layer_L + (L - np.mean(L)) * 0.3 
+
+            # Apply Manual Contrast & Brightness
+            if contrast != 1.0:
+                layer_L = l_pivot + (layer_L - l_pivot) * contrast
+            
             if brightness != 0:
                 layer_L += brightness
                 
-            # Apply Finish modifiers
+            # --- PROFESSIONAL FINISH STYLES ---
             if finish == "Matte":
-                # Flatten highlights and shadows
-                layer_L = 50.0 + (layer_L - 50.0) * 0.7
+                # Create a soft, diffused look by compressing the dynamic range
+                layer_L = l_pivot + (layer_L - l_pivot) * 0.8
+                layer_L -= 5.0 # Slightly darker/flatter
             elif finish == "Glossy":
-                # Boost contrast specifically for highlights
-                layer_L = 50.0 + (layer_L - 50.0) * 1.3
+                # Deepen shadows and pop highlights for luxury feel
+                layer_L = l_pivot + (layer_L - l_pivot) * 1.25
+                layer_L += 2.0 # Slight brightness pop
             
             layer_L = np.clip(layer_L, 0, 100)
 

@@ -459,9 +459,10 @@ def render_sidebar(sam, device_str):
             st.caption("🎨 Choose Color")
             
             preset_colors = {
-                "Sky Blue": "#87CEEB", "Royal Blue": "#4169E1", "Sage Green": "#8FBC8F",
-                "Cream": "#FFFDD0", "Terracotta": "#E2725B", "Charcoal": "#36454F", "Rose": "#FF007F",
-                "White": "#FFFFFF", "Black": "#000000"
+                "White": "#FFFFFF", "Cream": "#FFFDD0", "Sage Green": "#8FBC8F",
+                "Sky Blue": "#87CEEB", "Lavender": "#E6E6FA", "Peach": "#FFDAB9",
+                "Terracotta": "#E2725B", "Forest Green": "#228B22", "Royal Blue": "#4169E1",
+                "Midnight Navy": "#000080", "Charcoal": "#36454F", "Black": "#000000"
             }
             
             col_cp_1, col_cp_2 = st.columns([1, 1], vertical_alignment="bottom")
