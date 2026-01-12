@@ -30,7 +30,7 @@ torch.backends.cudnn.benchmark = False # Save more RAM
 
 # 🚀 DEPLOYMENT VERSION SYNC (Step Id 1714+)
 # Increment this to force Streamlit Cloud to discard old AI logic caches.
-CACHE_SALT = "V1.0.8-PRECISION"
+CACHE_SALT = "V1.0.9-STABLE"
 
 from streamlit_image_coordinates import streamlit_image_coordinates
 from streamlit_image_comparison import image_comparison
@@ -197,7 +197,7 @@ def get_sam_model(path, type_name, salt=""):
     # Create the model instance using the registry directly
     model = sam_model_registry[type_name](checkpoint=path)
     model.to(device=device)
-    model.device = device
+    # We don't set model.device here to avoid AttributeError on cloud environments
     return model
 
 @st.cache_resource
@@ -211,7 +211,8 @@ def get_sam_engine_singleton(checkpoint_path, model_type, salt=""):
     model = get_sam_model(checkpoint_path, model_type, salt=salt)
     if model is None:
         return None
-    return SegmentationEngine(model_instance=model, device=model.device)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    return SegmentationEngine(model_instance=model, device=device)
 
 def get_sam_engine(checkpoint_path, model_type):
     """Wrapped getter."""
