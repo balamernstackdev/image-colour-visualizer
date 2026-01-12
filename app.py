@@ -319,11 +319,11 @@ def initialize_session_state():
         "bg_cache": None,   # For selective compositing performance
         "sampling_mode": False,
         "composited_cache": None,
-        "render_id": 0, # Robust change tracking
+        "render_id": 0,         # Versioning for instant UI refresh
+        "picked_color": "#ff4b4b", # Default primary color
+        "engine_ready": False,  # Prevent redundant loading spinners
         "selected_layer_idx": None, # Track which layer is being edited
-        "last_export": None, # High-res download buffer
-        "engine_ready": False, # Prevent redundant loading spinners
-        "render_id": 0 # Versioning for instant UI refresh
+        "last_export": None     # High-res download buffer
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -1108,8 +1108,11 @@ def main():
                      
                      if refined_mask is not None:
                          last_layer['mask'] = refined_mask
+                         st.toast("🎯 Shape refined")
                          # Invalidate cache to force redraw in next step
                          st.session_state["composited_cache"] = None
+                         st.session_state["render_id"] += 1
+                         st.rerun()
                 else:
                      # NEW OBJECT Logic
                      mask = sam.generate_mask(
@@ -1138,6 +1141,7 @@ def main():
                             'name': f"Surface {len(st.session_state['masks'])+1}"
                         }
                         st.session_state["masks"].append(new_layer)
+                        st.toast(f"✅ Applied color to {new_layer['name']}")
                         
                         # Set as selected immediately for tweaking
                         st.session_state["selected_layer_idx"] = len(st.session_state["masks"]) - 1
@@ -1146,6 +1150,7 @@ def main():
                         st.session_state["composited_cache"] = None
                         st.session_state["bg_cache"] = None # Reset optimization cache
                         st.session_state["render_id"] += 1
+                        st.rerun() # Force instant UI update after layer addition
 
 
         # 1. Prepare Base Image (Original + Applied Colors) (Draw Phase)
