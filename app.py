@@ -28,6 +28,10 @@ torch.set_num_threads(1)
 torch.set_grad_enabled(False)
 torch.backends.cudnn.benchmark = False # Save more RAM
 
+# 🚀 DEPLOYMENT VERSION SYNC (Step Id 1714+)
+# Increment this to force Streamlit Cloud to discard old AI logic caches.
+CACHE_SALT = "V1.0.8-PRECISION"
+
 from streamlit_image_coordinates import streamlit_image_coordinates
 from streamlit_image_comparison import image_comparison
 # 📦 DEPENDENCY GUARD
@@ -184,7 +188,7 @@ def setup_styles():
 
 # --- MODEL MANAGEMENT ---
 @st.cache_resource
-def get_sam_model(path, type_name):
+def get_sam_model(path, type_name, salt=""):
     """Load and cache the heavy model weights globally."""
     if not os.path.exists(path):
         return None
@@ -193,6 +197,7 @@ def get_sam_model(path, type_name):
     # Create the model instance using the registry directly
     model = sam_model_registry[type_name](checkpoint=path)
     model.to(device=device)
+    model.device = device
     return model
 
 @st.cache_resource
@@ -201,16 +206,16 @@ def get_global_lock():
     return threading.Lock()
 
 @st.cache_resource
-def get_sam_engine_singleton(checkpoint_path, model_type):
+def get_sam_engine_singleton(checkpoint_path, model_type, salt=""):
     """Global engine singleton to avoid session state duplication."""
-    model = get_sam_model(checkpoint_path, model_type)
+    model = get_sam_model(checkpoint_path, model_type, salt=salt)
     if model is None:
         return None
     return SegmentationEngine(model_instance=model, device=model.device)
 
 def get_sam_engine(checkpoint_path, model_type):
     """Wrapped getter."""
-    return get_sam_engine_singleton(checkpoint_path, model_type)
+    return get_sam_engine_singleton(checkpoint_path, model_type, salt=CACHE_SALT)
 
 # --- HELPER LOGIC ---
 def get_crop_params(image_width, image_height, zoom_level, pan_x, pan_y):
@@ -602,6 +607,15 @@ def render_sidebar(sam, device_str):
             )
             st.session_state["refine_type"] = 1 if "Add" in refine_type else 0
             st.info(f"Click on the image to {refine_type.split(' ')[0]} that area.")
+
+        # --- SYSTEM RECOVERY ---
+        with st.sidebar.expander("🛠️ System Sync"):
+            st.caption(f"Backend Version: {CACHE_SALT}")
+            if st.button("🔄 Hard Reset AI Engine", use_container_width=True, help="Forcefully clears the AI cache and reloads the latest precision logic."):
+                st.cache_resource.clear()
+                for key in list(st.session_state.keys()):
+                    del st.session_state[key]
+                st.rerun()
 
         
         # Lighting & Adjustments (Hidden to avoid interruption)
