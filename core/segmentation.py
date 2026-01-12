@@ -42,6 +42,7 @@ class SegmentationEngine:
             image_rgb: NumPy array (H, W, 3) in RGB format.
         """
         logger.info("Computing image embeddings...")
+        self.image_rgb = image_rgb # Store for safety checks
         self.predictor.set_image(image_rgb)
         self.is_image_set = True
         logger.info("Embeddings computed.")
@@ -77,9 +78,15 @@ class SegmentationEngine:
             # User forced a specific level
             best_mask = masks[level]
         else:
-            # Heuristic: Choose the mask with the highest score
-            best_idx = np.argmax(scores)
-            best_mask = masks[best_idx]
+            # Heuristic: Favor 'Sub-segment' (Index 1) for architectural surfaces.
+            # Index 0 is often too small (part of a wall), Index 2 is often too large (whole room).
+            # Index 1 is the 'sweet spot' for walls/ceilings/floors.
+            # We pick index 1 unless index 0 or 2 has a significantly higher confidence boost.
+            if scores[1] > 0.85:
+                best_mask = masks[1]
+            else:
+                best_idx = np.argmax(scores)
+                best_mask = masks[best_idx]
         
         if cleanup:
             # Post-processing: Filter disconnected components
