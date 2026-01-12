@@ -143,7 +143,9 @@ class SegmentationEngine:
                     
                     if is_large_object:
                         # Auto-Switch to "Whole Object" logic for sofas/floors to prevent patchiness
+                        # BUT still apply some edge constraints if it's not explicitly Level 2
                         valid_mask = np.ones((h, w), dtype=np.uint8) 
+                        # We do NOT force level=2 here, so edge detection logic below will still run for walls.
                     else:
                         # Keep STRICT logic for walls and cabinets
                         if is_grayscale_seed:
@@ -165,8 +167,10 @@ class SegmentationEngine:
                     if level == 0:
                          k_size = (9, 9)
                     else:
-                         # Use loose blur for large objects in Auto-Detect, strict for walls
-                         k_size = (9, 9) if 'is_large_object' in locals() and is_large_object else (5, 5)
+                         # Force SHARP (5,5) blur even for large objects in Auto-Detect
+                         # This stops large walls from leaking into adjacent walls/ceilings.
+                         # We only trust loose blur if user EXPLICITLY chose Fine Detail (level=0).
+                         k_size = (5, 5)
                     
                     edge_gray = cv2.GaussianBlur(cv2.cvtColor(self.image_rgb, cv2.COLOR_RGB2GRAY), k_size, 0)
                     
