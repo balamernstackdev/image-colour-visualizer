@@ -151,27 +151,31 @@ class SegmentationEngine:
                 # Extract mask area pixels
                 masked_pixels = self.image_rgb[mask_uint8 > 0]
                 
-                if masked_pixels.size > 0:
-                    # More robust: Prune pixels that are TOO different from seed
-                    # This cuts off "leaks" into dark shadows or bright lights
-                    # 1. Calculate distance of all masked pixels from seed
-                    diff = np.abs(self.image_rgb.astype(np.int16) - seed_color.astype(np.int16))
-                    dist_mask = np.mean(diff, axis=2) # Average difference across R,G,B
+                # REVERTED: User requested removal of color safety checks as they caused "spotty" coverage.
+                # We now trust the AI model's output completely.
+                # if masked_pixels.size > 0:
+                #     # More robust: Prune pixels that are TOO different from seed
+                #     # This cuts off "leaks" into dark shadows or bright lights
+                #     # 1. Calculate distance of all masked pixels from seed
+                #     diff = np.abs(self.image_rgb.astype(np.int16) - seed_color.astype(np.int16))
+                #     dist_mask = np.mean(diff, axis=2) # Average difference across R,G,B
                     
-                    # Threshold: Allow variation for shading (60), but cut off distinct colors (>60)
-                    # If it's "Whole Object", we allow more variation (80)
-                    # UPDATED: Set Level 2 to 250 (Disable Check), Default to 150 (More tolerant)
-                    safety_thresh = 250 if level == 2 else 150
+                #     # Threshold: Allow variation for shading (60), but cut off distinct colors (>60)
+                #     # If it's "Whole Object", we allow more variation (80)
+                #     # UPDATED: Set Level 2 to 250 (Disable Check), Default to 150 (More tolerant)
+                #     safety_thresh = 250 if level == 2 else 150
                     
-                    valid_color_mask = (dist_mask < safety_thresh).astype(np.uint8)
+                #     valid_color_mask = (dist_mask < safety_thresh).astype(np.uint8)
                     
-                    # Intersect: Only keep parts of the AI mask that match the color roughly
-                    # BUT enforce connectivity to the click point so we don't keep random noise
-                    mask_refined = (mask_uint8 & valid_color_mask)
+                #     # Intersect: Only keep parts of the AI mask that match the color roughly
+                #     # BUT enforce connectivity to the click point so we don't keep random noise
+                #     mask_refined = (mask_uint8 & valid_color_mask)
                     
-                    # If this killed the mask (e.g. click was on a highlight), fallback to original
-                    if np.sum(mask_refined) > 100:
-                        mask_uint8 = mask_refined
+                #     # If this killed the mask (e.g. click was on a highlight), fallback to original
+                #     if np.sum(mask_refined) > 100:
+                #         mask_uint8 = mask_refined
+                
+                mask_refined = mask_uint8
             # Only apply if we have the image
             if hasattr(self, 'image_rgb'):
                 # Sample color around click
