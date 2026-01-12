@@ -1305,18 +1305,8 @@ def main():
             # OPTIMIZATION: Convert to JPEG Base64 to speed up the "flash" reload
             # PNG (default) is too slow and causes visible scanlines. JPEG is instant.
             try:
-                import base64
-                from io import BytesIO
-                
-                # Convert to PIL and save as JPEG
-                pil_img = Image.fromarray(final_display_image)
-                buffered = BytesIO()
-                pil_img.save(buffered, format="JPEG", quality=90)
-                img_str = base64.b64encode(buffered.getvalue()).decode()
-                img_base64 = f"data:image/jpeg;base64,{img_str}"
-
                 value = streamlit_image_coordinates(
-                    img_base64, # Pass pre-encoded JPEG
+                    Image.fromarray(final_display_image),
                     key=canvas_key,
                     width=display_width 
                 )
