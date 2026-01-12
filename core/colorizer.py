@@ -113,11 +113,9 @@ class ColorTransferEngine:
             if mask.shape[:2] != curr_A.shape[:2]:
                 continue
             
-            # Use software-cached soft mask
-            mask_soft = data.get('mask_soft')
-            if mask_soft is None:
-                mask_soft = cv2.GaussianBlur(mask.astype(np.float32, copy=False), (5, 5), 0)
-                data['mask_soft'] = mask_soft
+            # Performance: Compute soft mask on-the-fly (Fast on 448px)
+            # Caching it in session_state consumes too much RAM (crash risk)
+            mask_soft = cv2.GaussianBlur(mask.astype(np.float32, copy=False), (5, 5), 0)
 
             # Get target LAB (cached for speed)
             target_a, target_b = ColorTransferEngine.get_target_ab(color_hex)

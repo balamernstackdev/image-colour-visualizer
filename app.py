@@ -10,6 +10,13 @@ import os
 import io
 import logging
 import requests
+import gc
+
+# PERFORMANCE: Set CPU threading to minimum to save RAM on 1GB restricted systems.
+# Multi-threading in PyTorch on CPU can heavily spike memory for transformer models.
+torch.set_num_threads(1)
+torch.set_grad_enabled(False)
+
 from streamlit_image_coordinates import streamlit_image_coordinates
 from streamlit_image_comparison import image_comparison
 from core.segmentation import SegmentationEngine, sam_model_registry
@@ -147,18 +154,17 @@ def get_global_lock():
     """Lock to prevent multiple AI sessions from hitting the CPU at once."""
     return threading.Lock()
 
+@st.cache_resource
+def get_sam_engine_singleton(checkpoint_path, model_type):
+    """Global engine singleton to avoid session state duplication."""
+    model = get_sam_model(checkpoint_path, model_type)
+    if model is None:
+        return None
+    return SegmentationEngine(model_instance=model, device=model.device)
+
 def get_sam_engine(checkpoint_path, model_type):
-    """Get or create a session-specific engine instance."""
-    if "sam_engine" not in st.session_state:
-        # Load weights (cached globally)
-        model = get_sam_model(checkpoint_path, model_type)
-        if model is None:
-            return None
-            
-        # Create engine with pre-loaded model
-        st.session_state["sam_engine"] = SegmentationEngine(model_instance=model, device=model.device)
-        
-    return st.session_state["sam_engine"]
+    """Wrapped getter."""
+    return get_sam_engine_singleton(checkpoint_path, model_type)
 
 # --- HELPER LOGIC ---
 def get_crop_params(image_width, image_height, zoom_level, pan_x, pan_y):
@@ -291,7 +297,6 @@ def initialize_session_state():
             st.session_state[key] = value
     
     # Extra Safety: Ensure all current masks have the latest properties 
-    # (Prevents KeyErrors after project load or code update)
     if st.session_state.get("masks"):
         for m in st.session_state["masks"]:
             if 'visible' not in m: m['visible'] = True
@@ -303,7 +308,8 @@ def initialize_session_state():
             if 'finish' not in m: m['finish'] = 'Standard'
             if 'tex_rot' not in m: m['tex_rot'] = 0
             if 'tex_scale' not in m: m['tex_scale'] = 1.0
-            if 'mask_soft' not in m: m['mask_soft'] = None
+            # CRITICAL: Clear heavy cached blur arrays to save RAM
+            if 'mask_soft' in m: del m['mask_soft']
 
 # --- UI COMPONENTS ---
 def render_sidebar(sam, device_str):
@@ -325,8 +331,8 @@ def render_sidebar(sam, device_str):
                 st.session_state["image_original"] = image.copy()
                 
                 # OPTIMIZATION: Create Work Image (Preview)
-                # Lowered to 512px for ULTIMATE stability on 1GB RAM platforms
-                max_dim = 512 
+                # Lowered to 448px for ABSOLUTE stability on 1GB RAM platforms
+                max_dim = 448 
                 h, w = image.shape[:2]
                 if max(h, w) > max_dim:
                     scale = max_dim / max(h, w)
@@ -834,19 +840,20 @@ def main():
     setup_styles()
     initialize_session_state()
 
-    # --- STABILITY MIGRATION (Step Id 846+) ---
-    # Ensure current project respects the latest stability limits (512px)
+    # --- STABILITY MIGRATION ---
+    # Ensure current project respects the latest stability limits (448px)
     if st.session_state.get("image") is not None:
         opts_h, opts_w = st.session_state["image"].shape[:2]
-        if max(opts_h, opts_w) > 512:
-            scale = 512 / max(opts_h, opts_w)
+        if max(opts_h, opts_w) > 448:
+            scale = 448 / max(opts_h, opts_w)
             new_w, new_h = int(opts_w * scale), int(opts_h * scale)
             st.session_state["image"] = cv2.resize(st.session_state["image"], (new_w, new_h), interpolation=cv2.INTER_AREA)
-            st.session_state["masks"] = [] # Critical: Reset masks as indices won't match
+            st.session_state["masks"] = [] 
             st.session_state["composited_cache"] = None
             st.session_state["bg_cache"] = None
-            if "sam_engine" in st.session_state:
-                st.session_state["sam_engine"].is_image_set = False # Force AI re-analysis
+            sam = get_sam_engine(checkpoint_path, model_type)
+            if sam:
+                sam.is_image_set = False 
             st.rerun()
     
     # Render Sidebar FIRST (Instant UI)
@@ -923,15 +930,11 @@ def main():
     # --- ENGINE LIFECYCLE MANAGEMENT ---
     # We store the ENGINE instance in session_state so the image embeddings (which take 5s to compute)
     # persist across slider clicks. Re-creating the engine on every run causes "forgetting".
-    if "sam_engine" not in st.session_state:
-        engine = get_sam_engine(checkpoint_path, model_type)
-        if engine:
-            st.session_state["sam_engine"] = engine
-        else:
-            st.error(f"Failed to load engine from {checkpoint_path}")
-            st.stop()
-    
-    sam = st.session_state["sam_engine"]
+    sam = get_sam_engine(checkpoint_path, model_type)
+    if not sam:
+        st.error(f"Failed to load AI Engine. This might be a memory limit issue.")
+        st.stop()
+        
     placeholder.empty()
 
     # Render Sidebar & Get Context
