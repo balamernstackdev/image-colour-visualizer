@@ -128,35 +128,29 @@ class SegmentationEngine:
                 
                 # 3. Hybrid Thresholding
                 if is_grayscale_seed:
-                    valid_mask = (intensity_dist < 90)
+                    valid_mask = (intensity_dist < 60) # Tightened from 90
                 else:
-                    # Chroma 38 is approx 0.15 in fixed point (0.15 * 256)
-                    valid_mask = (chroma_dist < 38) & (intensity_dist < 180)
+                    # Tightened thresholds to prevent "Leaking" between similar surfaces
+                    valid_mask = (chroma_dist < 30) & (intensity_dist < 120)
 
                 valid_mask = valid_mask.astype(np.uint8)
                 
                 # Intersect with SAM mask
-                # Check 1: Simple Intersection
                 mask_refined = (mask_uint8 & valid_mask)
                 
-                # Check 2: Connectivity (Don't keep disconnected islands)
-                # But sometimes shadows are disconnected? No, usually connected.
-                # We'll rely on the main connectivity check at the end of function.
+                # --- LEAK PROTECTOR: Morphological cleanup to break tiny bridges ---
+                kernel = np.ones((3, 3), np.uint8)
+                mask_refined = cv2.morphologyEx(mask_refined, cv2.MORPH_OPEN, kernel)
                 
-                # Check 3: Safety Fallback
-                # If this strict check deletes >80% of the mask (e.g. complex texture), 
-                # we might want to back off... but user complained about leaks, so be strict.
-                # However, if we kill it entirely, that's bad.
                 if np.sum(mask_refined) > 50: # At least some pixels survived
                     mask_uint8 = mask_refined
             
-            # Check if the click point is actually inside the mask (it should be, but just in case)
-            # We take the first point (positive click)
+            # Check if the click point is actually inside the mask
             if len(point_coords) > 0:
                 cx, cy = int(point_coords[0][0]), int(point_coords[0][1])
                 
-                # Find connected components
-                num_labels, labels_im, stats, centroids = cv2.connectedComponentsWithStats(mask_uint8, connectivity=8)
+                # Find connected components (Connectivity=4 is stricter against leaks)
+                num_labels, labels_im, stats, centroids = cv2.connectedComponentsWithStats(mask_uint8, connectivity=4)
                 
                 if num_labels > 1:
                     # labels_im has values 0 (bg), 1, 2, ...
