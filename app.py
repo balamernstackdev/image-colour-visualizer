@@ -23,6 +23,11 @@ torch.backends.cudnn.benchmark = False # Save more RAM
 from streamlit_image_coordinates import streamlit_image_coordinates
 from streamlit_image_comparison import image_comparison
 from core.segmentation import SegmentationEngine, sam_model_registry
+
+# 🎯 GLOBAL AI CONFIGURATION (Step Id 1123+)
+# Defining these at module level prevents any scope errors during startup.
+MODEL_TYPE = "vit_t"
+CHECKPOINT_PATH = "weights/mobile_sam.pt"
 from core.colorizer import ColorTransferEngine
 
 # --- CONFIGURATION & STYLES ---
@@ -848,15 +853,12 @@ def main():
     setup_styles()
     initialize_session_state()
 
-    model_type = "vit_t"
-    checkpoint_path = "weights/mobile_sam.pt"
-
     # --- AUTO-HEAL: Download weights FIRST if missing ---
-    if not os.path.exists(checkpoint_path):
+    if not os.path.exists(CHECKPOINT_PATH):
         placeholder = st.empty()
         with placeholder.container():
             st.warning("⚠️ Light AI model not found. Downloading automatically... (approx 40MB)")
-            os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+            os.makedirs(os.path.dirname(CHECKPOINT_PATH), exist_ok=True)
             url = "https://github.com/ChaoningZhang/MobileSAM/raw/master/weights/mobile_sam.pt"
             try:
                 progress_bar = st.progress(0)
@@ -865,7 +867,7 @@ def main():
                 total_size = int(response.headers.get('content-length', 0))
                 downloaded = 0
                 chunk_size = 512 * 1024 
-                with open(checkpoint_path, "wb") as f:
+                with open(CHECKPOINT_PATH, "wb") as f:
                     for chunk in response.iter_content(chunk_size=chunk_size):
                         if chunk:
                             f.write(chunk)
@@ -874,16 +876,16 @@ def main():
                                 percent = min(1.0, downloaded / total_size)
                                 progress_bar.progress(percent)
                             status_text.text(f"📥 Downloaded {downloaded//(1024*1024)}MB...")
-                if os.path.getsize(checkpoint_path) < 35 * 1024 * 1024:
+                if os.path.getsize(CHECKPOINT_PATH) < 35 * 1024 * 1024:
                      st.error("Download incomplete or corrupt.")
-                     os.remove(checkpoint_path)
+                     os.remove(CHECKPOINT_PATH)
                      st.stop()
                 st.success("✅ Model weights verified.")
                 time.sleep(1)
                 st.rerun() 
             except Exception as e:
                 st.error(f"❌ Failed to download model: {e}")
-                if os.path.exists(checkpoint_path): os.remove(checkpoint_path)
+                if os.path.exists(CHECKPOINT_PATH): os.remove(CHECKPOINT_PATH)
                 st.stop()
 
     # --- STABILITY MIGRATION ---
@@ -896,7 +898,7 @@ def main():
             st.session_state["masks"] = [] 
             st.session_state["composited_cache"] = None
             st.session_state["bg_cache"] = None
-            sam = get_sam_engine(checkpoint_path, model_type)
+            sam = get_sam_engine(CHECKPOINT_PATH, MODEL_TYPE)
             if sam: sam.is_image_set = False 
             st.rerun()
     
@@ -913,7 +915,7 @@ def main():
     if "sam_engine" not in st.session_state:
         with placeholder.container():
             with st.spinner(f"🚀 Initializing AI Engine on {device_str}..."):
-                sam = get_sam_engine(checkpoint_path, model_type)
+                sam = get_sam_engine(CHECKPOINT_PATH, MODEL_TYPE)
     
     sam = st.session_state.get("sam_engine")
     if not sam:
