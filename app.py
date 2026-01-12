@@ -946,13 +946,19 @@ def main():
     # We pass None for sam initially to sidebar, or refactor sidebar to not need it for basic UI
     # Let's adjust sidebar to take device string specifically
     
-    # Load Model (Session Aware)
+    # Load Model (Session Aware - Optimized for "Instant" feel)
     placeholder = st.empty()
     device_str = "CUDA" if torch.cuda.is_available() else "CPU"
     
-    with placeholder.container():
-        with st.spinner(f"🚀 Initializing AI Engine on {device_str}..."):
-            sam = get_sam_engine(CHECKPOINT_PATH, MODEL_TYPE)
+    # PERFORMANCE: Only show spinner on first load to avoid "Loading Interruption" on every click
+    if not st.session_state.get("engine_ready", False):
+        with placeholder.container():
+            with st.spinner(f"🚀 Initializing AI Engine on {device_str}..."):
+                sam = get_sam_engine(CHECKPOINT_PATH, MODEL_TYPE)
+                if sam:
+                    st.session_state["engine_ready"] = True
+    else:
+        sam = get_sam_engine(CHECKPOINT_PATH, MODEL_TYPE)
     
     if not sam:
         st.error("AI Engine could not be initialized. Please check if the model weights are downloaded correctly.")
