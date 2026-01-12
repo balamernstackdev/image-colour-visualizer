@@ -131,17 +131,18 @@ class SegmentationEngine:
                     # Disable color/intensity limits completely to allow full coverage of shadowed walls/floors
                     valid_mask = np.ones((h, w), dtype=np.uint8)
                 elif level == 0: # "Fine Detail" (NOW DEFAULT) - SURGICAL
-                    # Slightly relaxed Intensity (70->90, 110->130) to fix "breaking colors" around lights
+                    # Relax intensity heavily (90->120, 130->180) to allow painting over bright lights
+                    # We rely on strict chroma (28) and edge barriers to stop leaks.
                     if is_grayscale_seed:
-                        valid_mask = (intensity_dist < 90).astype(np.uint8)
+                        valid_mask = (intensity_dist < 120).astype(np.uint8)
                     else:
-                        valid_mask = ((chroma_dist < 28) & (intensity_dist < 130)).astype(np.uint8)
+                        valid_mask = ((chroma_dist < 28) & (intensity_dist < 180)).astype(np.uint8)
                 else: # "Optimized" - BALANCED
-                    # Same relaxed logic for consistency
+                    # Consistent relaxation for fallback mode
                     if is_grayscale_seed:
-                        valid_mask = (intensity_dist < 100).astype(np.uint8)
+                        valid_mask = (intensity_dist < 130).astype(np.uint8)
                     else:
-                        valid_mask = ((chroma_dist < 30) & (intensity_dist < 140)).astype(np.uint8)
+                        valid_mask = ((chroma_dist < 30) & (intensity_dist < 190)).astype(np.uint8)
 
                 # --- ULTRA-PRECISION EDGE GUARD (MODE-SENSITIVE) ---
                 if level == 2:
