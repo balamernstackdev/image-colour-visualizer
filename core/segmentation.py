@@ -45,6 +45,7 @@ class SegmentationEngine:
         self.predictor.set_image(image_rgb)
         self.is_image_set = True
         logger.info("Embeddings computed.")
+        self.image_rgb = image_rgb # Store for cleanup logic
 
     def generate_mask(self, point_coords, point_labels=None, level=None, cleanup=True):
         """
@@ -73,75 +74,125 @@ class SegmentationEngine:
                 multimask_output=True # Generate multiple masks and choose best
             )
 
-        if level is not None and 0 <= level <= 2:
+        # Select best mask
+        if level is not None and 0 <= level < 3:
             # User forced a specific level
             best_mask = masks[level]
         else:
-            # Heuristic: Choose the mask with the highest score
-            best_idx = np.argmax(scores)
-            best_mask = masks[best_idx]
+            # Heuristic: Favor 'Sub-segment' (Index 1) for architectural surfaces.
+            if scores[1] > 0.70: 
+                best_mask = masks[1]
+            else:
+                best_idx = np.argmax(scores)
+                best_mask = masks[best_idx]
         
         if cleanup:
             # Post-processing: Filter disconnected components
-            # We only want the component that contains the clicked point.
-            
-            # Ensure mask is uint8 for OpenCV
+            h, w = best_mask.shape
             mask_uint8 = (best_mask * 255).astype(np.uint8)
+            
             # --- SMART COLOR SAFETY CHECK ---
-            # Re-enabled with Chromaticity Logic to fix Leaking AND Shadows.
-            if hasattr(self, 'image_rgb'):
-                cx, cy = int(point_coords[0][0]), int(point_coords[0][1])
-                h, w = self.image_rgb.shape[:2]
-                cx, cy = max(0, min(cx, w-1)), max(0, min(cy, h-1))
-                
-                # Sample Seed
-                seed_color = self.image_rgb[cy, cx].astype(np.float32)
-                
-                # Check if seed is Grayscale (Saturation check)
-                seed_mean = np.mean(seed_color)
-                seed_sat = np.max(seed_color) - np.min(seed_color)
-                is_grayscale_seed = seed_sat < 20 # Low saturation
-                
-                # 1. Chromaticity (Color only, invariant to brightness/shadows)
-                # OPTIMIZATION: Use uint16 for distance check to avoid heavy float32 conversion
-                img_u16 = self.image_rgb.astype(np.uint16)
-                img_sum = np.sum(img_u16, axis=2, keepdims=True)
-                img_sum[img_sum == 0] = 1 # Prevent div by zero
-                
-                # We can do this on integer space or float32? 
-                # Float32 is better for precision, but let's do it faster.
-                img_chroma = (img_u16[:, :, :2] << 8) // img_sum # Fixed point shift
-                seed_chroma = (seed_color[:2].astype(np.uint16) << 8) // np.sum(seed_color + 0.1)
-                
-                # Color Distance
-                chroma_dist = np.sum(np.abs(img_chroma - seed_chroma), axis=2)
-                
-                # 2. Intensity (Brightness)
-                intensity_dist = np.abs(np.mean(img_u16, axis=2) - np.mean(seed_color))
-                
-                # 3. Hybrid Thresholding
-                if is_grayscale_seed:
-                    valid_mask = (intensity_dist < 90)
-                else:
-                    # Chroma 38 is approx 0.15 in fixed point (0.15 * 256)
-                    valid_mask = (chroma_dist < 38) & (intensity_dist < 180)
+            # If we have a positive click, ensure we don't bleed into vastly different colors.
+            # This is critical for White Wall -> White Cabinet separation.
+            if len(point_coords) > 0 and len(point_labels) > 0:
+                # Find the positive click (label 1)
+                pos_indices = np.where(point_labels == 1)[0]
+                if len(pos_indices) > 0:
+                    idx = pos_indices[-1] # Use most recent click
+                    cx, cy = int(point_coords[idx][0]), int(point_coords[idx][1])
+                    
+                    # Sample seed color (3x3 average for stability)
+                    y1, y2 = max(0, cy-1), min(h, cy+2)
+                    x1, x2 = max(0, cx-1), min(w, cx+2)
+                    seed_patch = self.image_rgb[y1:y2, x1:x2]
+                    seed_color = np.mean(seed_patch, axis=(0, 1))
+                    
+                    # Check for Grayscale Seed (White/Grey walls)
+                    # If R~G~B, we tighten intensity limits and ignore chroma
+                    std_dev = np.std(seed_color)
+                    is_grayscale_seed = std_dev < 10.0 # Strict check for neutral colors
+                    
+                    # 1. Chroma (Color) Distance (Fast integer math)
+                    img_u16 = self.image_rgb.astype(np.uint16)
+                    img_sum = np.sum(img_u16, axis=2) + 1 # Avoid div/0
+                    
+                    # Normalize chromaticity: r = R/Sum, g = G/Sum
+                    img_chroma = (img_u16[:, :, :2] << 8) // img_sum.reshape(h, w, 1) # Fixed point shift
+                    seed_sum = np.sum(seed_color) + 0.1
+                    seed_chroma = (seed_color[:2].astype(np.uint16) << 8) // int(seed_sum)
+                    
+                    # Color Distance
+                    chroma_dist = np.sum(np.abs(img_chroma - seed_chroma), axis=2)
+                    
+                    # 2. Intensity (Brightness)
+                    intensity_dist = np.abs(np.mean(img_u16, axis=2) - np.mean(seed_color))
+                    
+                    # 3. Hybrid Thresholding (ADAPTIVE BASED ON MODE)
+                    if level == 2: # "Whole Object" 
+                        valid_mask = np.ones((h, w), dtype=np.uint8)
+                    elif level == 0: # "Fine Detail" (NOW DEFAULT) - SURGICAL
+                        # Relax intensity heavily (90->120, 130->180) to allow painting over bright lights
+                        # We rely on strict chroma (28) and edge barriers to stop leaks.
+                        if is_grayscale_seed:
+                            valid_mask = (intensity_dist < 120).astype(np.uint8)
+                        else:
+                            valid_mask = ((chroma_dist < 28) & (intensity_dist < 180)).astype(np.uint8)
+                    else: # "Optimized" - BALANCED
+                        # Consistent relaxation for fallback mode
+                        if is_grayscale_seed:
+                            valid_mask = (intensity_dist < 130).astype(np.uint8)
+                        else:
+                            valid_mask = ((chroma_dist < 30) & (intensity_dist < 190)).astype(np.uint8)
 
-                valid_mask = valid_mask.astype(np.uint8)
-                
-                # Intersect with SAM mask
-                # Check 1: Simple Intersection
-                mask_refined = (mask_uint8 & valid_mask)
-                
-                # Check 2: Connectivity (Don't keep disconnected islands)
-                # But sometimes shadows are disconnected? No, usually connected.
-                # We'll rely on the main connectivity check at the end of function.
-                
-                # Check 3: Safety Fallback
-                # If this strict check deletes >80% of the mask (e.g. complex texture), 
-                # we might want to back off... but user complained about leaks, so be strict.
-                # However, if we kill it entirely, that's bad.
-                if np.sum(mask_refined) > 50: # At least some pixels survived
-                    mask_uint8 = mask_refined
+                    # --- ULTRA-PRECISION EDGE GUARD (MODE-SENSITIVE) ---
+                    if level == 2:
+                        # RUG & FLOOR PROTECTOR
+                        kernel_ext = np.ones((7, 7), np.uint8)
+                        mask_refined = cv2.morphologyEx(mask_uint8, cv2.MORPH_CLOSE, kernel_ext)
+                        mask_refined = (mask_refined & valid_mask)
+                        edge_barrier = np.ones((h, w), dtype=np.uint8)
+                    else:
+                        # Sharpened blur (9x9 -> 5x5) to catch Cabinet & Cornice lines in Auto-Detect
+                        if level == 0:
+                             k_size = (9, 9)
+                        else:
+                             k_size = (9, 9)
+                        
+                        edge_gray = cv2.GaussianBlur(cv2.cvtColor(self.image_rgb, cv2.COLOR_RGB2GRAY), k_size, 0)
+                        
+                        grad_x = cv2.Sobel(edge_gray, cv2.CV_16S, 1, 0, ksize=3)
+                        grad_y = cv2.Sobel(edge_gray, cv2.CV_16S, 0, 1, ksize=3)
+                        abs_grad_x = cv2.convertScaleAbs(grad_x)
+                        abs_grad_y = cv2.convertScaleAbs(grad_y)
+                        sobel_edges = cv2.addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0)
+                        
+                        laplacian = cv2.Laplacian(edge_gray, cv2.CV_16S, ksize=3)
+                        abs_laplacian = cv2.convertScaleAbs(laplacian)
+                        edges = cv2.addWeighted(sobel_edges, 0.7, abs_laplacian, 0.3, 0)
+                        
+                        # Fine Detail matches Optimized at 45
+                        e_thresh = 45 
+                        _, edge_barrier = cv2.threshold(edges, e_thresh, 255, cv2.THRESH_BINARY_INV)
+                        edge_barrier = (edge_barrier / 255).astype(np.uint8)
+                        
+                        # Robust barrier thickening
+                        edge_barrier = cv2.erode(edge_barrier, np.ones((3, 3), np.uint8), iterations=2)
+                        
+                        # SAFETY Zone around click (ensure paint starts smoothly)
+                        cv2.circle(edge_barrier, (cx, cy), 15, 1, -1)
+
+                    # Intersect SAM mask with Adaptive Boundaries
+                    if level != 2:
+                        mask_refined = (mask_uint8 & valid_mask & edge_barrier)
+                    else:
+                        mask_refined = mask_uint8 # For level 2, valid_mask is all ones, edge_barrier is all ones.
+                    
+                    # --- LEAK PROTECTOR: Morphological cleanup to break tiny bridges ---
+                    kernel = np.ones((3, 3), np.uint8)
+                    mask_refined = cv2.morphologyEx(mask_refined, cv2.MORPH_OPEN, kernel)
+                    
+                    if np.sum(mask_refined) > 50: # At least some pixels survived
+                        mask_uint8 = mask_refined
             
             # Check if the click point is actually inside the mask (it should be, but just in case)
             # We take the first point (positive click)
