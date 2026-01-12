@@ -321,7 +321,9 @@ def initialize_session_state():
         "composited_cache": None,
         "render_id": 0, # Robust change tracking
         "selected_layer_idx": None, # Track which layer is being edited
-        "last_export": None # High-res download buffer
+        "last_export": None, # High-res download buffer
+        "engine_ready": False, # Prevent redundant loading spinners
+        "render_id": 0 # Versioning for instant UI refresh
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -498,17 +500,9 @@ def render_sidebar(sam, device_str):
             # Save state for next run
             st.session_state["picked_color"] = picked_color
 
-            # --- LIVE TWEAKING ---
-            idx = st.session_state.get("selected_layer_idx")
-            if idx is not None and 0 <= idx < len(st.session_state["masks"]):
-                st.info(f"✨ **Live Tweak:** Surface {idx+1}")
-                last_layer = st.session_state["masks"][idx]
-                if last_layer.get("color") != picked_color:
-                     last_layer["color"] = picked_color
-                     st.session_state["composited_cache"] = None 
-                     st.session_state["render_id"] += 1
-            else:
-                 st.caption("🖌️ **Paint Mode:** Picking Color for Next Object")
+            # --- SIMPLIFIED UI: No automatic 'Live Tweak' from main sidebar ---
+            # This prevents picking a color for 'Next Object' from changing the 'Last Object'.
+            st.caption("🖌️ **Paint Mode:** Picking Color for Next Object")
 
 
         
@@ -687,6 +681,7 @@ def render_sidebar(sam, device_str):
                         st.session_state["composited_cache"] = None
                         st.session_state["bg_cache"] = None
                         st.session_state["last_export"] = None
+                        st.session_state["render_id"] += 1 # Force instant UI update
                         st.rerun()
             
             with col_undo_2:
@@ -696,6 +691,7 @@ def render_sidebar(sam, device_str):
                     st.session_state["composited_cache"] = None
                     st.session_state["bg_cache"] = None
                     st.session_state["last_export"] = None
+                    st.session_state["render_id"] += 1 # Force instant UI update
                     st.rerun()
             
             st.write("---")
@@ -724,6 +720,7 @@ def render_sidebar(sam, device_str):
                             st.session_state["selected_layer_idx"] = None # Reset selection
                             st.session_state["composited_cache"] = None
                             st.session_state["bg_cache"] = None
+                            st.session_state["render_id"] += 1 # Force instant UI update
                             st.rerun()
 
                     # Control Row: Select Hub
@@ -1232,7 +1229,9 @@ def main():
             final_display_image = np.ascontiguousarray(final_display_image, dtype=np.uint8)
             
             # Dynamic key ensures component resets on view change, preventing infinite pan loops
-            canvas_key = f"canvas_{st.session_state['zoom_level']}_{st.session_state['pan_x']:.2f}_{st.session_state['pan_y']:.2f}"
+            # PERFORMANCE: Injecting st.session_state['render_id'] forces the component to REDRAW
+            # immediately when a layer is deleted or undone.
+            canvas_key = f"canvas_{st.session_state['render_id']}_{st.session_state['zoom_level']}_{st.session_state['pan_x']:.2f}_{st.session_state['pan_y']:.2f}"
             
             try:
                 # Use explicit width to ensure coordinates match our logic (1000px)
