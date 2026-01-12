@@ -72,6 +72,12 @@ def setup_styles():
         [data-testid="stSidebar"] {
             background-color: #f8f9fa !important; 
             border-right: 1px solid #e6e6e6;
+            width: 350px !important;
+        }
+        
+        /* Sidebar collapse adjustment for the main content area */
+        [data-testid="stSidebarNav"] {
+            width: 350px !important;
         }
         
         /* Sidebar Text Color */
