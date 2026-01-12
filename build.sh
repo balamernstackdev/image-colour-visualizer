@@ -9,4 +9,14 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
 
 # Download weights if not present
-python download_weights.py
+echo "📦 Checking AI Model weights..."
+if [ ! -f "weights/sam_vit_b_01ec64.pth" ]; then
+    echo "🌐 Downloading weights during build for zero-wait startup..."
+    python download_weights.py
+    echo "✅ Download finished."
+else
+    echo "✨ Weights already present in build cache."
+fi
+
+# Print final status
+ls -lh weights/
