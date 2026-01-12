@@ -970,10 +970,11 @@ def main():
     placeholder.empty()
     render_sidebar(sam, device_str)
 
-    # CENTRALIZED LOADING: Compute embeddings if a new image is present
+    # CENTRALIZED LOADING: Compute embeddings if a new image is present OR if the engine was reset/re-allocated
     if st.session_state["image"] is not None:
         img_id = id(st.session_state["image"])
-        if st.session_state.get("engine_img_id") != img_id:
+        # CRITICAL: We also check sam.is_image_set in case the global singleton was reset
+        if st.session_state.get("engine_img_id") != img_id or not getattr(sam, 'is_image_set', False):
             lock = get_global_lock()
             with placeholder.container():
                 with st.spinner("🚀 Analyzing image structure..."):
@@ -1100,6 +1101,12 @@ def main():
                      last_layer['points'].append(click_tuple)
                      last_layer['labels'].append(new_label)
                      
+                     # RESILIENCE: Self-healing check
+                     if not sam.is_image_set:
+                         with st.spinner("🔄 AI Re-syncing image..."):
+                             sam.set_image(st.session_state["image"])
+                             st.session_state["engine_img_id"] = id(st.session_state["image"])
+                             
                      refined_mask = sam.generate_mask(
                          last_layer['points'],
                          last_layer['labels'],
@@ -1116,6 +1123,12 @@ def main():
                          st.rerun()
                 else:
                      # NEW OBJECT Logic
+                     # RESILIENCE: Self-healing check if engine lost its image embeddings
+                     if st.session_state.get("engine_img_id") != id(st.session_state["image"]) or not sam.is_image_set:
+                         with st.spinner("🔄 AI Re-syncing image..."):
+                             sam.set_image(st.session_state["image"])
+                             st.session_state["engine_img_id"] = id(st.session_state["image"])
+
                      mask = sam.generate_mask(
                         [click_tuple],
                         [1], 
