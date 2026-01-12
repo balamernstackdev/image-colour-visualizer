@@ -388,10 +388,33 @@ def render_sidebar(sam, device_str):
             with lock:
                 # Re-check state inside lock
                 if not sam.is_image_set:
-                    with st.spinner("Analyzing image structure (AI is mapping your room)..."):
+                    # IMPROVEMENT: Percentage-based loading for better UX
+                    prog_bar = st.progress(0, text="Starting analysis...")
+                    
+                    try:
+                        # 1. Image Prep
+                        prog_bar.progress(20, text="Preprocessing image resolution...")
+                        image_to_process = st.session_state["image"]
+                        
+                        # 2. AI Encoding (The heavy part)
+                        prog_bar.progress(40, text="AI: Mapping room geometry (This may take a moment)...")
+                        
                         # Use torch.no_grad for speed
                         with torch.no_grad():
-                            sam.set_image(st.session_state["image"])
+                            sam.set_image(image_to_process)
+                            
+                        # 3. Finalize
+                        # PERSISTENCE FIX: Don't clear immediately so user sees "Ready!"
+                        prog_bar.progress(90, text="Finalizing spatial index...")
+                        time.sleep(0.3) 
+                        prog_bar.progress(100, text="✅ Ready! Start painting.")
+                        time.sleep(0.5)
+                        # We leave it visible until user interacts or subsequent logical clear
+                        # prog_bar.empty() 
+                        
+                    except Exception as e:
+                        prog_bar.empty()
+                        st.error(f"Analysis Failed: {e}")
     
         # Material Section
         st.divider()
@@ -440,25 +463,32 @@ def render_sidebar(sam, device_str):
             if st.session_state.get("picked_sample"):
                 picked_color = st.session_state["picked_sample"]
 
-            # CRITICAL: Apply changes to Active Layer Instantly
-            # MODIFIED (Step Id 120): Only update if a layer is explicitly SELECTED
-            idx = st.session_state.get("selected_layer_idx")
-            if idx is not None and 0 <= idx < len(st.session_state["masks"]):
-                last_layer = st.session_state["masks"][idx]
-                if last_layer.get("color") != picked_color:
-                     last_layer["color"] = picked_color
-                     # Invalidate cache so it redraws with new color in this same run
-                     st.session_state["composited_cache"] = None 
+            # --- TARGET SElECTION MODE ---
+            # Resolve confusion about "Why is my old object changing color?"
+            # We explicitly ask the user: Are you tweaking the current one, or picking for the next one?
             
-            # --- SELECTION CONTROL ---
-            # Quick way to Deselect so user can pick color for NEXT object
-            if idx is not None:
-                st.caption(f"Editing: **Layer {idx+1}**")
-                if st.button("✅ Finish / Start New Object", use_container_width=True):
-                    st.session_state["selected_layer_idx"] = None
-                    st.rerun()
+            target_mode = "New Object"
+            idx = st.session_state.get("selected_layer_idx")
+            
+            # If we have a selection, show the toggle
+            if idx is not None and 0 <= idx < len(st.session_state["masks"]):
+                st.write(f"**Target:** Layer {idx+1} (Active)")
+                mode_cols = st.columns(2)
+                with mode_cols[0]:
+                    if st.button("✨ Tweak Layer", type="primary", use_container_width=True, disabled=True):
+                        pass # Visual indicator only
+                with mode_cols[1]:
+                    if st.button("🎨 Start New", use_container_width=True):
+                        st.session_state["selected_layer_idx"] = None
+                        st.rerun()
+                
+                # We are in Tweak Mode
+                if st.session_state["masks"][idx].get("color") != picked_color:
+                     st.session_state["masks"][idx]["color"] = picked_color
+                     st.session_state["composited_cache"] = None 
             else:
-                 st.caption("🎨 Picking Color for **Next Object**")
+                 st.info("🎨 Picking Color for **Next Object**")
+
 
         
         elif mat_type == "Library":
