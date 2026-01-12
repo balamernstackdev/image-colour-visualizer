@@ -137,11 +137,19 @@ class SegmentationEngine:
                     else:
                         valid_mask = ((chroma_dist < 28) & (intensity_dist < 110)).astype(np.uint8)
                 else: # "Optimized" - BALANCED (Auto-Detect)
-                    if is_grayscale_seed:
-                        # Tightened from 100 to 85 to stop leaking onto white cabinets
-                        valid_mask = (intensity_dist < 85).astype(np.uint8)
+                    # CONTEXT AWARE (Step Id 1860+): Check if object is Large (Sofa/Floor) or Small (Wall/Cabinet)
+                    mask_coverage = np.sum(best_mask) / (h * w)
+                    is_large_object = mask_coverage > 0.15 
+                    
+                    if is_large_object:
+                        # Auto-Switch to "Whole Object" logic for sofas/floors to prevent patchiness
+                        valid_mask = np.ones((h, w), dtype=np.uint8) 
                     else:
-                        valid_mask = ((chroma_dist < 30) & (intensity_dist < 140)).astype(np.uint8)
+                        # Keep STRICT logic for walls and cabinets
+                        if is_grayscale_seed:
+                            valid_mask = (intensity_dist < 85).astype(np.uint8)
+                        else:
+                            valid_mask = ((chroma_dist < 30) & (intensity_dist < 140)).astype(np.uint8)
 
                 # --- ULTRA-PRECISION EDGE GUARD (MODE-SENSITIVE) ---
                 if level == 2:
@@ -154,7 +162,12 @@ class SegmentationEngine:
                     edge_barrier = np.ones((h, w), dtype=np.uint8)
                 else:
                     # Sharpened blur (9x9 -> 5x5) to catch Cabinet & Cornice lines in Auto-Detect
-                    k_size = (9, 9) if level == 0 else (5, 5) 
+                    if level == 0:
+                         k_size = (9, 9)
+                    else:
+                         # Use loose blur for large objects in Auto-Detect, strict for walls
+                         k_size = (9, 9) if 'is_large_object' in locals() and is_large_object else (5, 5)
+                    
                     edge_gray = cv2.GaussianBlur(cv2.cvtColor(self.image_rgb, cv2.COLOR_RGB2GRAY), k_size, 0)
                     
                     grad_x = cv2.Sobel(edge_gray, cv2.CV_16S, 1, 0, ksize=3)

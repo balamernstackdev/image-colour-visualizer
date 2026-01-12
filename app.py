@@ -570,23 +570,24 @@ def render_sidebar(sam, device_str):
         st.toggle("Compare Before/After", key="show_comparison")
 
         # Segmentation Control (Fix for Leaks)
-        st.divider()
-        st.subheader("⚙️ Precision")
-        sens_mode = st.radio(
-            "Segmentation Mode", 
-            ["Auto-Detect (Smart)", "Optimized", "Fine Detail", "Whole Object"], 
-            index=0,
-            horizontal=False, 
-            help="✨ **Auto-Detect:** The recommended 'Set and Forget' mode. Automatically balances precision and coverage.\n\n� **Optimized:** Good for standard walls.\n\n🎯 **Fine Detail:** Use for tricky corners.\n\n🌐 **Whole Object:** Use for Floors/Rugs."
-        )
-        
-        if "Fine Detail" in sens_mode:
-            st.session_state["mask_level"] = 0
-        elif "Whole Object" in sens_mode:
-            st.session_state["mask_level"] = 2
-        else:
-            # Auto-Detect and Optimized both fall back to the smart heuristics (None)
-            st.session_state["mask_level"] = None 
+        # HIDDEN BY DEFAULT (Step Id 1860+): User requested "Automated no manual option".
+        # We put this in an expander so it doesn't confuse them.
+        with st.expander("⚙️ Advanced Precision (Optional)"):
+            sens_mode = st.radio(
+                "Segmentation Mode", 
+                ["Auto-Detect (Smart)", "Optimized", "Fine Detail", "Whole Object"], 
+                index=0,
+                horizontal=False, 
+                help="✨ **Auto-Detect:** The recommended 'Set and Forget' mode. Automatically balances precision and coverage.\n\n🏠 **Optimized:** Good for standard walls.\n\n🎯 **Fine Detail:** Use for tricky corners.\n\n🌐 **Whole Object:** Use for Floors/Rugs."
+            )
+            
+            if "Fine Detail" in sens_mode:
+                st.session_state["mask_level"] = 0
+            elif "Whole Object" in sens_mode:
+                st.session_state["mask_level"] = 2
+            else:
+                # Auto-Detect and Optimized both fall back to the smart heuristics (None)
+                st.session_state["mask_level"] = None 
 
         # Painting Mode Control
         st.divider()
