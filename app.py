@@ -1298,15 +1298,25 @@ def main():
             final_display_image = np.ascontiguousarray(final_display_image, dtype=np.uint8)
             
             # Dynamic key ensures component resets on view change, preventing infinite pan loops
-            # PERFORMANCE: Removed 'render_id' from key to prevent full component unmount/remount on color change.
-            # This fixes the "loading from top" flash. The component will still update because the image argument changes.
-            canvas_key = f"canvas_{st.session_state['zoom_level']}_{st.session_state['pan_x']:.2f}_{st.session_state['pan_y']:.2f}"
+            # PERFORMANCE: We must use 'render_id' in the key to force the component to reset.
+            # Otherwise, clicking the same pixel twice (e.g. to re-paint) won't register.
+            canvas_key = f"canvas_{st.session_state['render_id']}_{st.session_state['zoom_level']}_{st.session_state['pan_x']:.2f}_{st.session_state['pan_y']:.2f}"
             
+            # OPTIMIZATION: Convert to JPEG Base64 to speed up the "flash" reload
+            # PNG (default) is too slow and causes visible scanlines. JPEG is instant.
             try:
-                # Use explicit width to ensure coordinates match our logic (1000px)
-                # This prevents browser resizing from breaking 'Right' and 'Bottom' arrow detection
+                import base64
+                from io import BytesIO
+                
+                # Convert to PIL and save as JPEG
+                pil_img = Image.fromarray(final_display_image)
+                buffered = BytesIO()
+                pil_img.save(buffered, format="JPEG", quality=90)
+                img_str = base64.b64encode(buffered.getvalue()).decode()
+                img_base64 = f"data:image/jpeg;base64,{img_str}"
+
                 value = streamlit_image_coordinates(
-                    Image.fromarray(final_display_image),
+                    img_base64, # Pass pre-encoded JPEG
                     key=canvas_key,
                     width=display_width 
                 )
