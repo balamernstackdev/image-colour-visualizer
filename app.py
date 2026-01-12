@@ -148,7 +148,7 @@ def setup_styles():
         }
         /* Force main container to use full width */
         .main .block-container {
-            max_width: 95% !important;
+            max-width: 95% !important;
             padding-left: 2rem !important;
             padding-right: 2rem !important;
         }
@@ -893,6 +893,7 @@ def main():
                      st.stop()
                 st.success("✅ Model weights verified.")
                 time.sleep(1)
+                st.cache_resource.clear() # CRITICAL: Clear cache so it tries to load for real
                 st.rerun() 
             except Exception as e:
                 st.error(f"❌ Failed to download model: {e}")
@@ -1180,8 +1181,12 @@ def main():
             st.session_state["last_disp_params"] = current_disp_params
             st.session_state["last_scale_factor"] = scale_factor
         
-        final_display_image = st.session_state["cached_display_image"]
-        scale_factor = st.session_state["last_scale_factor"]
+        final_display_image = st.session_state.get("cached_display_image")
+        scale_factor = st.session_state.get("last_scale_factor", 1.0)
+
+        if final_display_image is None or final_display_image.size == 0:
+            st.warning("⚠️ Rendering issue: Image preview is empty. Try refreshing the page.")
+            return
 
         # Container for the image
         with st.container():
