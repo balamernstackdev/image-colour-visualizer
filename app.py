@@ -313,8 +313,8 @@ def render_sidebar(sam, device_str):
                 st.session_state["image_original"] = image.copy()
                 
                 # OPTIMIZATION: Create Work Image (Preview)
-                # Lowered to 800px for stability on 1GB RAM platforms
-                max_dim = 800 
+                # Lowered to 512px for ULTIMATE stability on 1GB RAM platforms
+                max_dim = 512 
                 h, w = image.shape[:2]
                 if max(h, w) > max_dim:
                     scale = max_dim / max(h, w)
@@ -916,28 +916,31 @@ def main():
 
     # CENTRALIZED LOADING: Compute embeddings if a new image is present
     if st.session_state["image"] is not None:
-        # Check if the engine has the CURRENT image set
-        # We use id() to check if the image array has changed
         img_id = id(st.session_state["image"])
         if st.session_state.get("engine_img_id") != img_id:
+            lock = get_global_lock()
             with placeholder.container():
                 st.info(f"🚀 Analyzing image structure... (This only happens once per image)")
-                try:
-                    import gc
-                    gc.collect() # Free memory before heavy task
-                    
-                    with torch.no_grad():
-                        sam.set_image(st.session_state["image"])
-                    
-                    st.session_state["engine_img_id"] = img_id
-                    gc.collect() 
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error analyzing image: {e}")
-                    # If OOM happened, try to clear cache
-                    if "Out of memory" in str(e):
-                        torch.cuda.empty_cache()
-                    st.stop()
+                with lock: # Prevent multiple tabs from hitting RAM at once
+                    try:
+                        import gc
+                        gc.collect() 
+                        
+                        # Use a local copy and delete it immediately after to save RAM
+                        work_img = st.session_state["image"].copy()
+                        
+                        with torch.inference_mode():
+                            sam.set_image(work_img)
+                        
+                        del work_img
+                        st.session_state["engine_img_id"] = img_id
+                        gc.collect() 
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error analyzing image: {e}")
+                        if "Out of memory" in str(e):
+                            torch.cuda.empty_cache()
+                        st.stop()
     
     # Main Workflow
     if st.session_state["image"] is not None:
@@ -947,9 +950,9 @@ def main():
         # Check against new higher limit
         if st.session_state["image"] is not None:
             opts_h, opts_w = st.session_state["image"].shape[:2]
-            if max(opts_h, opts_w) > 800:
+            if max(opts_h, opts_w) > 512:
                 # Downscale immediately
-                scale = 800 / max(opts_h, opts_w)
+                scale = 512 / max(opts_h, opts_w)
                 new_w = int(opts_w * scale)
                 new_h = int(opts_h * scale)
                 st.session_state["image"] = cv2.resize(st.session_state["image"], (new_w, new_h), interpolation=cv2.INTER_AREA)

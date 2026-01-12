@@ -66,7 +66,7 @@ class SegmentationEngine:
         point_coords = np.array(point_coords)
         point_labels = np.array(point_labels)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             masks, scores, logits = self.predictor.predict(
                 point_coords=point_coords,
                 point_labels=point_labels,
