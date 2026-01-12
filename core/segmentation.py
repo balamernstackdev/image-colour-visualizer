@@ -141,19 +141,14 @@ class SegmentationEngine:
                     mask_coverage = np.sum(best_mask) / (h * w)
                     is_large_object = mask_coverage > 0.15 
                     
-                    if is_large_object:
-                        # Even for large objects, we must check STRICT limits to prevent white-on-white leaks.
-                        # We use the same strict thresholds as Fine Detail to ensure walls don't leak into cabinets.
-                        if is_grayscale_seed:
-                            valid_mask = (intensity_dist < 70).astype(np.uint8)
-                        else:
-                            valid_mask = ((chroma_dist < 28) & (intensity_dist < 110)).astype(np.uint8)
+                    
+                    # UNIVERSAL STRICTNESS (Step Id 1988+): 
+                    # We removed the 'Large Object' relaxation entirely.
+                    # Auto-Detect now ALWAYS enforces the strictest 'Fine Detail' limits.
+                    if is_grayscale_seed:
+                        valid_mask = (intensity_dist < 70).astype(np.uint8)
                     else:
-                        # Keep STRICT logic for walls and cabinets
-                        if is_grayscale_seed:
-                            valid_mask = (intensity_dist < 85).astype(np.uint8)
-                        else:
-                            valid_mask = ((chroma_dist < 30) & (intensity_dist < 140)).astype(np.uint8)
+                        valid_mask = ((chroma_dist < 28) & (intensity_dist < 110)).astype(np.uint8)
 
                 # --- ULTRA-PRECISION EDGE GUARD (MODE-SENSITIVE) ---
                 if level == 2:
