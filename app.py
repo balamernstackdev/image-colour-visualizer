@@ -556,7 +556,7 @@ def render_sidebar(sam, device_str):
             ["Optimized (Default)", "Fine Detail (Part)", "Whole Object"], 
             index=0,
             horizontal=True,
-            help="If colors leak to other areas, try 'Fine Detail'. If it doesn't cover enough, try 'Whole Object'."
+            help="🏠 **Optimized:** Best for most walls.\n\n🎯 **Fine Detail:** Use this if colors leak onto the ceiling or cabinets. It respects corners much strictly.\n\n🌐 **Whole Object:** Use this for large continuous areas."
         )
         
         if sens_mode == "Fine Detail (Part)":

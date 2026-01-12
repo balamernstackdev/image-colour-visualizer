@@ -82,7 +82,7 @@ class SegmentationEngine:
             # Index 0 is often too small (part of a wall), Index 2 is often too large (whole room).
             # Index 1 is the 'sweet spot' for walls/ceilings/floors.
             # We pick index 1 unless index 0 or 2 has a significantly higher confidence boost.
-            if scores[1] > 0.85:
+            if scores[1] > 0.70: # Lowered from 0.85 to be more selective
                 best_mask = masks[1]
             else:
                 best_idx = np.argmax(scores)
@@ -128,15 +128,35 @@ class SegmentationEngine:
                 
                 # 3. Hybrid Thresholding
                 if is_grayscale_seed:
-                    valid_mask = (intensity_dist < 60) # Tightened from 90
+                    valid_mask = (intensity_dist < 50) # Strict for white/gray surfaces
                 else:
-                    # Tightened thresholds to prevent "Leaking" between similar surfaces
-                    valid_mask = (chroma_dist < 30) & (intensity_dist < 120)
+                    valid_mask = (chroma_dist < 25) & (intensity_dist < 100)
 
                 valid_mask = valid_mask.astype(np.uint8)
                 
-                # Intersect with SAM mask
-                mask_refined = (mask_uint8 & valid_mask)
+                # --- EDGE BOUNDARY GUARD (Step Id 1532+) ---
+                # Detect physical corners/edges to prevent leaking onto ceilings
+                gray = cv2.cvtColor(self.image_rgb, cv2.COLOR_RGB2GRAY)
+                # Sensitive Sobel to catch faint architectural lines
+                grad_x = cv2.Sobel(gray, cv2.CV_16S, 1, 0, ksize=3)
+                grad_y = cv2.Sobel(gray, cv2.CV_16S, 0, 1, ksize=3)
+                abs_grad_x = cv2.convertScaleAbs(grad_x)
+                abs_grad_y = cv2.convertScaleAbs(grad_y)
+                edges = cv2.addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0)
+                
+                # Create a binary "Edge Barrier" (Lowered threshold from 40 to 25 for faint lines)
+                _, edge_barrier = cv2.threshold(edges, 25, 255, cv2.THRESH_BINARY_INV)
+                edge_barrier = (edge_barrier / 255).astype(np.uint8)
+                
+                # SAFETY: Ensure the click point itself is never blocked by an edge
+                cx, cy = int(point_coords[0][0]), int(point_coords[0][1])
+                cv2.circle(edge_barrier, (cx, cy), 5, 1, -1)
+                
+                # Thicken the barrier slightly to prevent diagonal leakage
+                edge_barrier = cv2.erode(edge_barrier, np.ones((3, 3), np.uint8), iterations=1)
+
+                # Intersect SAM mask with both Color and Edge boundaries
+                mask_refined = (mask_uint8 & valid_mask & edge_barrier)
                 
                 # --- LEAK PROTECTOR: Morphological cleanup to break tiny bridges ---
                 kernel = np.ones((3, 3), np.uint8)
