@@ -99,7 +99,8 @@ class ColorTransferEngine:
         
         L, base_A, base_B = st.session_state[l_cache_key]
         
-        # 2. Accumulate A/B changes
+        # 2. Accumulate L, A, and B changes separately
+        curr_L = L.copy()
         curr_A = base_A.copy()
         curr_B = base_B.copy()
 
@@ -113,20 +114,68 @@ class ColorTransferEngine:
             if mask.shape[:2] != curr_A.shape[:2]:
                 continue
             
-            # Performance: Compute soft mask on-the-fly (Fast on 448px)
-            # Caching it in session_state consumes too much RAM (crash risk)
-            mask_soft = cv2.GaussianBlur(mask.astype(np.float32, copy=False), (5, 5), 0)
+            opacity = data.get('opacity', 1.0)
+            if opacity <= 0:
+                continue
 
-            # Get target LAB (cached for speed)
+            # Performance: Compute soft mask on-the-fly (Fast on 448px)
+            mask_soft = cv2.GaussianBlur(mask.astype(np.float32, copy=False), (5, 5), 0)
+            mask_effective = mask_soft * opacity
+
+            # --- Target Color (A/B) ---
             target_a, target_b = ColorTransferEngine.get_target_ab(color_hex)
+            
+            # Hue & Saturation Adjustments (Vector math in A/B space)
+            sat = data.get('saturation', 1.0)
+            hue_deg = data.get('hue', 0.0)
+            
+            if sat != 1.0 or hue_deg != 0.0:
+                # Saturation scaling
+                target_a *= sat
+                target_b *= sat
+                
+                # Hue rotation
+                if hue_deg != 0:
+                    angle = np.deg2rad(hue_deg)
+                    cos_a = np.cos(angle)
+                    sin_a = np.sin(angle)
+                    new_a = target_a * cos_a - target_b * sin_a
+                    new_b = target_a * sin_a + target_b * cos_a
+                    target_a, target_b = new_a, new_b
+
+            # --- Target Lightness (L) ---
+            brightness = data.get('brightness', 0.0) * 80.0 # Scale to LAB range
+            contrast = data.get('contrast', 1.0)
+            finish = data.get('finish', 'Standard')
+            
+            layer_L = L.copy()
+            
+            # Apply Contrast (Centered at mid-point 128/2 in float space or 50 in LAB)
+            if contrast != 1.0:
+                layer_L = 50.0 + (layer_L - 50.0) * contrast
+            
+            # Apply Brightness
+            if brightness != 0:
+                layer_L += brightness
+                
+            # Apply Finish modifiers
+            if finish == "Matte":
+                # Flatten highlights and shadows
+                layer_L = 50.0 + (layer_L - 50.0) * 0.7
+            elif finish == "Glossy":
+                # Boost contrast specifically for highlights
+                layer_L = 50.0 + (layer_L - 50.0) * 1.3
+            
+            layer_L = np.clip(layer_L, 0, 100)
 
             # Cumulative Blend
             # Result = Target * Mask + Background * (1 - Mask)
-            curr_A = (target_a * mask_soft) + (curr_A * (1.0 - mask_soft))
-            curr_B = (target_b * mask_soft) + (curr_B * (1.0 - mask_soft))
+            curr_L = (layer_L * mask_effective) + (curr_L * (1.0 - mask_effective))
+            curr_A = (target_a * mask_effective) + (curr_A * (1.0 - mask_effective))
+            curr_B = (target_b * mask_effective) + (curr_B * (1.0 - mask_effective))
 
         # 3. Single Re-Merge
-        final_lab = cv2.merge([L, curr_A, curr_B])
+        final_lab = cv2.merge([curr_L, curr_A, curr_B])
         final_rgb = cv2.cvtColor(final_lab, cv2.COLOR_Lab2RGB)
         
         return np.clip(final_rgb * 255.0, 0, 255).astype(np.uint8)

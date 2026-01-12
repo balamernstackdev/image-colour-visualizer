@@ -587,8 +587,12 @@ def render_sidebar(sam, device_str):
             st.divider()
             st.subheader("💡 Layer Tuning")
             
-            # Target the most recent layer by default
-            target_mask = st.session_state["masks"][-1]
+            # Sync with selection hub
+            idx = st.session_state.get("selected_layer_idx")
+            if idx is not None and 0 <= idx < len(st.session_state["masks"]):
+                target_mask = st.session_state["masks"][idx]
+            else:
+                target_mask = st.session_state["masks"][-1]
             
             # Opacity
             op = st.slider("Opacity", 0.0, 1.0, target_mask.get("opacity", 1.0), key="tune_opacity")
@@ -619,6 +623,22 @@ def render_sidebar(sam, device_str):
                 ct = st.slider("Contrast", 0.5, 1.5, target_mask.get("contrast", 1.0), key="tune_contrast")
                 if ct != target_mask.get("contrast", 1.0):
                     target_mask["contrast"] = ct
+                    st.session_state["bg_cache"] = None
+                    st.session_state["composited_cache"] = None
+                    st.rerun()
+
+                # Saturation
+                sat = st.slider("Saturation", 0.0, 3.0, target_mask.get("saturation", 1.0), key="tune_sat")
+                if sat != target_mask.get("saturation", 1.0):
+                    target_mask["saturation"] = sat
+                    st.session_state["bg_cache"] = None
+                    st.session_state["composited_cache"] = None
+                    st.rerun()
+
+                # Hue
+                hue = st.slider("Hue Shift", -180, 180, int(target_mask.get("hue", 0)), key="tune_hue")
+                if hue != target_mask.get("hue", 0):
+                    target_mask["hue"] = float(hue)
                     st.session_state["bg_cache"] = None
                     st.session_state["composited_cache"] = None
                     st.rerun()
