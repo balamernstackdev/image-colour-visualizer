@@ -3,7 +3,7 @@ opencv-python-headless
 numpy
 torch
 torchvision
-git+https://github.com/facebookresearch/segment-anything.git
+mobile-sam
 scipy
 streamlit-image-coordinates
 streamlit-image-comparison

@@ -10,7 +10,7 @@ pip install -r requirements.txt
 
 # Download weights if not present
 echo "📦 Checking AI Model weights..."
-if [ ! -f "weights/sam_vit_b_01ec64.pth" ]; then
+if [ ! -f "weights/mobile_sam.pt" ]; then
     echo "🌐 Downloading weights during build for zero-wait startup..."
     python download_weights.py
     echo "✅ Download finished."

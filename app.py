@@ -334,9 +334,9 @@ def render_sidebar(sam, device_str):
                 st.session_state["image_original"] = image.copy()
                 
                 # OPTIMIZATION: Create Work Image (Preview)
-                # Lowered to 384px for ULTIMATE survival on 1GB RAM platforms.
-                # 384 is a multiple of SAM's 64x64 patches, maintaining alignment accuracy.
-                max_dim = 384 
+                # With MobileSAM (Step Id 993+), we can safely go back to 640px 
+                # as the model itself is 10x smaller.
+                max_dim = 640 
                 h, w = image.shape[:2]
                 if max(h, w) > max_dim:
                     scale = max_dim / max(h, w)
@@ -844,11 +844,11 @@ def main():
     initialize_session_state()
 
     # --- STABILITY MIGRATION ---
-    # Enforcing 384px limit for strict 1GB RAM environments
+    # With MobileSAM, 640px is the new safe standard
     if st.session_state.get("image") is not None:
         opts_h, opts_w = st.session_state["image"].shape[:2]
-        if max(opts_h, opts_w) > 384:
-            scale = 384 / max(opts_h, opts_w)
+        if max(opts_h, opts_w) > 640:
+            scale = 640 / max(opts_h, opts_w)
             new_w, new_h = int(opts_w * scale), int(opts_h * scale)
             st.session_state["image"] = cv2.resize(st.session_state["image"], (new_w, new_h), interpolation=cv2.INTER_AREA)
             st.session_state["masks"] = [] 
@@ -874,18 +874,18 @@ def main():
         with placeholder.container():
             st.info(f"🚀 Initializing AI Engine on {device_str}... (This takes 10s on first load)")
             
-    model_type = "vit_b"
-    checkpoint_path = f"weights/sam_{model_type}_01ec64.pth"
+    model_type = "vit_t"
+    checkpoint_path = "weights/mobile_sam.pt"
     
     # Actually Load
     # AUTO-HEAL: If model is missing (e.g. on new deployment), download it now.
     if not os.path.exists(checkpoint_path):
-        st.warning("⚠️ Model weights not found on server. Downloading now... (approx 375MB)")
+        st.warning("⚠️ Light AI model not found. Downloading automatically... (approx 40MB)")
         
         # Ensure directory exists
         os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
         
-        url = "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
+        url = "https://github.com/ChaoningZhang/MobileSAM/raw/master/weights/mobile_sam.pt"
         try:
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -893,36 +893,30 @@ def main():
             response = requests.get(url, stream=True)
             total_size = int(response.headers.get('content-length', 0))
             
-            if total_size == 0:
-                st.error("Could not determine file size. Server might be down.")
-                st.stop()
-                
             downloaded = 0
-            # Increase chunk size for faster download (1MB)
-            chunk_size = 1024 * 1024 
+            chunk_size = 512 * 1024 # 512KB chunks
             
             with open(checkpoint_path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=chunk_size):
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
-                        # Percent calc
-                        percent = min(1.0, downloaded / total_size)
-                        progress_bar.progress(percent)
-                        status_text.text(f"📥 Downloaded {downloaded//(1024*1024)}MB / {total_size//(1024*1024)}MB...")
+                        if total_size > 0:
+                            percent = min(1.0, downloaded / total_size)
+                            progress_bar.progress(percent)
+                        status_text.text(f"📥 Downloaded {downloaded//(1024*1024)}MB...")
             
-            status_text.text("✅ Download complete! Verifying...")
-            
-            # Verify size (Check if file is at least 300MB)
-            if os.path.getsize(checkpoint_path) < 300 * 1024 * 1024:
-                 st.error("Download incomplete or corrupt. Please refresh the page.")
+            # Verify size (Check if file is at least 35MB)
+            if os.path.getsize(checkpoint_path) < 35 * 1024 * 1024:
+                 st.error("Download incomplete or corrupt.")
                  os.remove(checkpoint_path)
                  st.stop()
                  
-            st.success("✅ Model weights verified. Loading AI into memory...")
+            st.success("✅ Model weights verified.")
             time.sleep(1)
             progress_bar.empty()
             status_text.empty()
+            st.rerun() # Refresh to trigger loading
             
         except Exception as e:
             st.error(f"❌ Failed to download model: {e}")

@@ -1,8 +1,8 @@
 import requests
 import os
 
-url = "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
-output_path = "weights/sam_vit_b_01ec64.pth"
+url = "https://github.com/ChaoningZhang/MobileSAM/raw/master/weights/mobile_sam.pt"
+output_path = "weights/mobile_sam.pt"
 
 if not os.path.exists("weights"):
     os.makedirs("weights")
