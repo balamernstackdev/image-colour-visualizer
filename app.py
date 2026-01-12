@@ -107,6 +107,9 @@ def setup_styles():
             padding-top: 50px;
             padding-bottom: 20px;
         }
+        .landing-header h1 {
+            color: #333333 !important;
+        }
         .landing-sub {
             text-align: center;
             color: #666666 !important;
@@ -320,6 +323,7 @@ def render_sidebar(sam, device_str):
                 
                 # Reset SAM
                 sam.is_image_set = False
+                st.session_state["ai_ready"] = False
                 # Defer sam.set_image(image) to the lazy loading block below for perceived speed
                 # st.rerun() removed to smoother flow
         else:
@@ -841,9 +845,11 @@ def main():
     render_sidebar(sam, device_str)
     
     # CENTRALIZED LOADING: Process here specifically to show Spinner in MAIN area
-    if st.session_state["image"] is not None and not sam.is_image_set:
-        lock = get_global_lock()
-        # Create a container so we can show a nice centered spinner
+    # Robust check: If we have flagged 'ai_ready', skip this check entirely to prevent "white screen" on reruns
+    if st.session_state["image"] is not None and not st.session_state.get("ai_ready", False):
+        if not sam.is_image_set:
+            lock = get_global_lock()
+            # Create a container so we can show a nice centered spinner
         with st.container():
             # Add some spacing to center it vertically if needed, or just let it sit at top
             st.write(" ")
@@ -860,6 +866,7 @@ def main():
                         with torch.no_grad():
                             sam.set_image(st.session_state["image"])
                     
+                    st.session_state["ai_ready"] = True
                     st.rerun() # Rerun to remove loader and show tool
                     
                 except Exception as e:
