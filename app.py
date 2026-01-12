@@ -424,10 +424,9 @@ def render_sidebar(sam, device_str):
             st.session_state["last_preset_val"] = selected_preset
 
             # 3. If preset didn't just change, try to respect the current active layer's color
-            if not preset_changed and st.session_state["masks"]:
-                default_picker_val = st.session_state["masks"][-1].get("color", default_picker_val)
-            elif not preset_changed and st.session_state.get("picked_color"):
-                default_picker_val = st.session_state["picked_color"]
+            # 3. If preset didn't just change, keep the last picked color
+            if not preset_changed and st.session_state.get("picked_color"):
+                 default_picker_val = st.session_state["picked_color"]
 
             with col_cp_2:
                 # The picker defaults to strictly following the active layer (if exists) or the preset
