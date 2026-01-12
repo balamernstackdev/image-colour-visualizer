@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import cv2
 import logging
-from segment_anything import sam_model_registry, SamPredictor
+from mobile_sam import sam_model_registry, SamPredictor
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
