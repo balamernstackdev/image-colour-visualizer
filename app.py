@@ -216,8 +216,9 @@ def composite_image(original_rgb, masks_data):
                     mismatched = True
                     break
                     
-                # Check mask geometry (expensive, do last)
-                if not np.array_equal(curr['mask'], cached['mask']):
+                # Check mask geometry (Optimization: Use ID check instead of full array comparison)
+                # Since we don't mutate mask arrays in-place, identity check is sufficient and O(1)
+                if id(curr['mask']) != id(cached['mask']):
                     mismatched = True
                     break
             
@@ -436,11 +437,28 @@ def render_sidebar(sam, device_str):
             if st.session_state.get("picked_sample"):
                 picked_color = st.session_state["picked_sample"]
 
-            # --- SIMPLIFIED FLOW ---
-            st.caption("🖌️ **Paint Mode:** Picking Color for Next Object")
-            
-            # Ensure we are always in "New Object" mode implicitly for the picker
-            # We do NOT update st.session_state["masks"][idx] here anymore.
+            # --- ACTIVE LAYER LOGIC ---
+            idx = st.session_state.get("selected_layer_idx")
+            if idx is not None and 0 <= idx < len(st.session_state["masks"]):
+                # WE HAVE AN ACTIVE LAYER -> Color changes apply to IT (Tweaking)
+                # But we give the user a way to "Finish" it so they can pick a NEW color for the NEXT one.
+                
+                st.caption(f"✏️ Editing **Surface {idx+1}**")
+                
+                # Apply Color Change
+                last_layer = st.session_state["masks"][idx]
+                if last_layer.get("color") != picked_color:
+                     last_layer["color"] = picked_color
+                     # Invalidate cache so it redraws with new color in this same run
+                     st.session_state["composited_cache"] = None 
+                     st.session_state["render_id"] += 1
+                
+                if st.button("✅ Done / Start New", use_container_width=True):
+                    st.session_state["selected_layer_idx"] = None
+                    st.rerun()
+            else:
+                 # NO ACTIVE LAYER -> Picking color for future click
+                 st.caption("🖌️ **Paint Mode:** Picking Color for Next Object")
 
 
         

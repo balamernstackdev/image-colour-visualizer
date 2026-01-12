@@ -92,9 +92,15 @@ class ColorTransferEngine:
             if not color_hex:
                 continue
             
-            # Feather mask
-            mask_float = mask.astype(np.float32)
-            mask_soft = cv2.GaussianBlur(mask_float, (5, 5), 0)
+            # Feather mask - PERFORMANCE CACHING
+            # We store the softened mask so we don't re-compute GaussianBlur every frame
+            mask_soft = data.get('mask_soft')
+            if mask_soft is None:
+                mask_float = mask.astype(np.float32)
+                # Use a slightly smaller kernel for speed/precision balance
+                mask_soft = cv2.GaussianBlur(mask_float, (5, 5), 0)
+                # Store it back in the data dict for next time
+                data['mask_soft'] = mask_soft
 
             # Prepare Target Color A/B
             rgb = ColorTransferEngine.hex_to_rgb(color_hex)
