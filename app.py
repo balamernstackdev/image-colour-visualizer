@@ -22,10 +22,21 @@ torch.backends.cudnn.benchmark = False # Save more RAM
 
 from streamlit_image_coordinates import streamlit_image_coordinates
 from streamlit_image_comparison import image_comparison
-from core.segmentation import SegmentationEngine, sam_model_registry
+# 📦 DEPENDENCY GUARD
+# We check these first to give the user a clean install instruction if they are missing locally.
+try:
+    import mobile_sam
+    import timm
+    from core.segmentation import SegmentationEngine, sam_model_registry
+except ImportError:
+    import streamlit as st
+    st.error("### 🧱 Missing AI Components")
+    st.info("It looks like the new lightweight AI libraries are not installed on your computer yet.")
+    st.code("pip install timm git+https://github.com/ChaoningZhang/MobileSAM.git")
+    st.write("Please run the command above in your terminal and then **restart** this app.")
+    st.stop()
 
-# 🎯 GLOBAL AI CONFIGURATION (Step Id 1123+)
-# Defining these at module level prevents any scope errors during startup.
+# 🎯 GLOBAL AI CONFIGURATION
 MODEL_TYPE = "vit_t"
 CHECKPOINT_PATH = "weights/mobile_sam.pt"
 from core.colorizer import ColorTransferEngine
