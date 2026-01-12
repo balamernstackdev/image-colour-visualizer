@@ -615,34 +615,39 @@ def render_sidebar(sam, device_str):
             col_undo_1, col_undo_2 = st.columns(2)
             with col_undo_1:
                 if st.button("⏪ Undo", use_container_width=True, help="Revert last click/layer"):
-                    last_layer = st.session_state["masks"][-1]
-                    if len(last_layer.get('points', [])) > 1:
-                        # Undo last refinement point
-                        last_layer['points'].pop()
-                        last_layer['labels'].pop()
-                        # Re-generate mask for this layer
-                        with torch.no_grad():
-                            new_mask = sam.generate_mask(
-                                last_layer['points'],
-                                last_layer['labels'],
-                                level=st.session_state.get("mask_level"),
-                                cleanup=(len(last_layer['points']) == 1)
-                            )
-                            if new_mask is not None:
-                                last_layer['mask'] = new_mask
-                    else:
-                        # Remove entire layer
-                        st.session_state["masks"].pop()
-                    
-                    st.session_state["composited_cache"] = None
-                    st.session_state["bg_cache"] = None
-                    st.rerun()
+                    if st.session_state["masks"]:
+                        last_layer = st.session_state["masks"][-1]
+                        if len(last_layer.get('points', [])) > 1:
+                            # Undo last refinement point
+                            last_layer['points'].pop()
+                            last_layer['labels'].pop()
+                            # Re-generate mask for this layer
+                            with torch.inference_mode():
+                                new_mask = sam.generate_mask(
+                                    last_layer['points'],
+                                    last_layer['labels'],
+                                    level=st.session_state.get("mask_level"),
+                                    cleanup=(len(last_layer['points']) == 1)
+                                )
+                                if new_mask is not None:
+                                    last_layer['mask'] = new_mask
+                        else:
+                            # Remove entire layer
+                            st.session_state["masks"].pop()
+                            st.session_state["selected_layer_idx"] = None
+                        
+                        st.session_state["composited_cache"] = None
+                        st.session_state["bg_cache"] = None
+                        st.session_state["last_export"] = None
+                        st.rerun()
             
             with col_undo_2:
                 if st.button("🗑️ Clear All", use_container_width=True):
                     st.session_state["masks"] = []
+                    st.session_state["selected_layer_idx"] = None
                     st.session_state["composited_cache"] = None
                     st.session_state["bg_cache"] = None
+                    st.session_state["last_export"] = None
                     st.rerun()
             
             st.write("---")
@@ -872,7 +877,8 @@ def main():
     # Check if we have the model loaded already to skip UI flicker
     if "sam_engine" not in st.session_state:
         with placeholder.container():
-            st.info(f"🚀 Initializing AI Engine on {device_str}... (This takes 10s on first load)")
+            with st.spinner(f"🚀 Initializing AI Engine on {device_str}... (This takes 10s on first load)"):
+                sam = get_sam_engine(checkpoint_path, model_type)
             
     model_type = "vit_t"
     checkpoint_path = "weights/mobile_sam.pt"
@@ -943,35 +949,30 @@ def main():
         if st.session_state.get("engine_img_id") != img_id:
             lock = get_global_lock()
             with placeholder.container():
-                st.info(f"🚀 Analyzing image structure... (This only happens once per image)")
-                with lock: 
-                    try:
-                        import gc
-                        gc.collect() 
-                        
-                        # Use a local copy and delete it immediately after to save RAM
-                        work_img = st.session_state["image"].copy()
-                        
-                        with torch.inference_mode():
-                            # This is the heavy part. Single-threaded to keep RAM flat.
-                            sam.set_image(work_img)
-                        
-                        # MEMORY SALVAGE: Explicitly clear the large input tensor cache 
-                        # and wipe temporary pointers immediately.
-                        del work_img
-                        st.session_state["engine_img_id"] = img_id
-                        
-                        # Final aggressive cleanup before yielding back to the UI
-                        gc.collect()
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
+                with st.spinner("🚀 Analyzing image structure..."):
+                    with lock: 
+                        try:
+                            # RAM PROTECTION: Avoid unnecessary copies
+                            # If we must process, we do it in-place or via a very tight reference
+                            img_to_process = st.session_state["image"]
                             
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error analyzing image: {e}")
-                        if "Out of memory" in str(e):
-                            torch.cuda.empty_cache()
-                        st.stop()
+                            with torch.inference_mode():
+                                # This is the heavy part. Single-threaded to keep RAM flat.
+                                sam.set_image(img_to_process)
+                            
+                            st.session_state["engine_img_id"] = img_id
+                            
+                            # Final aggressive cleanup 
+                            gc.collect()
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                                
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error analyzing image: {e}")
+                            if "Out of memory" in str(e):
+                                torch.cuda.empty_cache()
+                            st.stop()
     
     # Main Workflow
     if st.session_state["image"] is not None:
