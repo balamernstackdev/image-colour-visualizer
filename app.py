@@ -432,31 +432,13 @@ def render_sidebar(sam, device_str):
             if st.session_state.get("picked_sample"):
                 picked_color = st.session_state["picked_sample"]
 
-            # --- TARGET SElECTION MODE ---
-            # Resolve confusion about "Why is my old object changing color?"
-            # We explicitly ask the user: Are you tweaking the current one, or picking for the next one?
+            # --- SIMPLIFIED FLOW ---
+            # User wants strict sequential painting: Pick Color -> Click Wall.
+            # Changing color here will NOT affect previous layers.
+            st.caption("🖌️ **Paint Mode:** Color applies to new objects only.")
             
-            target_mode = "New Object"
-            idx = st.session_state.get("selected_layer_idx")
-            
-            # If we have a selection, show the toggle
-            if idx is not None and 0 <= idx < len(st.session_state["masks"]):
-                st.write(f"**Target:** Layer {idx+1} (Active)")
-                mode_cols = st.columns(2)
-                with mode_cols[0]:
-                    if st.button("✨ Tweak Layer", type="primary", use_container_width=True, disabled=True):
-                        pass # Visual indicator only
-                with mode_cols[1]:
-                    if st.button("🎨 Start New", use_container_width=True):
-                        st.session_state["selected_layer_idx"] = None
-                        st.rerun()
-                
-                # We are in Tweak Mode
-                if st.session_state["masks"][idx].get("color") != picked_color:
-                     st.session_state["masks"][idx]["color"] = picked_color
-                     st.session_state["composited_cache"] = None 
-            else:
-                 st.info("🎨 Picking Color for **Next Object**")
+            # Ensure we are always in "New Object" mode implicitly for the picker
+            # We do NOT update st.session_state["masks"][idx] here anymore.
 
 
         
