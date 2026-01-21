@@ -139,13 +139,13 @@ class SegmentationEngine:
                     if level == 2: # "Whole Object" 
                         valid_mask = np.ones((h, w), dtype=np.uint8)
                     elif level == 0: # "Walls" 
-                        # We use Mask 0 + Healing Strategy.
-                        # Strict thresholds so the Closing step doesn't bridge neighbors.
+                        # We use Mask 0 + Aggressive Healing Strategy.
+                        # Relaxed thresholds to allow healing through texture shadows.
                         if is_grayscale_seed:
                             valid_mask = (intensity_dist < 120).astype(np.uint8)
                         else:
-                            # Chroma < 40 ensures we don't bleed during Closing
-                            valid_mask = ((chroma_dist < 40) & (intensity_dist < 180)).astype(np.uint8)
+                            # Chroma < 50, Intensity < 195 to catch texture shadows
+                            valid_mask = ((chroma_dist < 50) & (intensity_dist < 195)).astype(np.uint8)
                     else: # "Small Objects" (Precision Mode - level 1)
                         # Strict thresholds to prevent bleeding into walls
                         if is_grayscale_seed:
@@ -163,9 +163,9 @@ class SegmentationEngine:
                     else:
                         # Blur Strategy
                         if level == 0:
-                             # Moderate blur is enough, Closing handles the texture
-                             k_size = (9, 9)
-                             e_thresh = 50 
+                             # Softer blur to help with texture
+                             k_size = (11, 11)
+                             e_thresh = 55 
                         else:
                              # Sharp blur for small objects to respect edges
                              k_size = (5, 5)
@@ -200,8 +200,8 @@ class SegmentationEngine:
                         # --- TEXTURE HEALING (For Walls Only) ---
                         # Use Morphological Closing to fuse texture holes while keeping edge separation.
                         if level == 0:
-                            # Using slightly larger 9x9 kernel for stronger fusion
-                            h_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+                            # Aggressive healing (15x15) to fuse heavy texture
+                            h_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
                             mask_refined = cv2.morphologyEx(mask_refined, cv2.MORPH_CLOSE, h_kernel)
                     else:
                         mask_refined = mask_uint8 # For level 2, valid_mask is all ones, edge_barrier is all ones.
