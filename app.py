@@ -604,41 +604,74 @@ def render_sidebar(sam, device_str):
         with st.expander("⚙️ Advanced Precision (Optional)"):
             sens_mode = st.radio(
                 "Segmentation Mode", 
-                ["Fine Detail (Default)", "Optimized", "Whole Object"], 
+                ["Walls (Default)", "Small Objects", "Floors/Whole"], 
                 index=0,
                 horizontal=False, 
-                help="🎯 **Fine Detail:** The new default. Best for walls and ceilings with precise edges.\n\n🏠 **Optimized:** Good for standard surfaces.\n\n🌐 **Whole Object:** Use for Floors/Rugs."
+                help="🧱 **Walls:** Aggressive filling. Ignores texture/text holes.\n\n🪟 **Small Objects:** Precise. Best for Windows, Vents, Trim.\n\n🌐 **Floors/Whole:** Best for Rugs, Floors, Ceilings."
             )
             
-            if "Fine Detail" in sens_mode:
+            if "Walls" in sens_mode:
                 st.session_state["mask_level"] = 0
-            elif "Whole Object" in sens_mode:
+            elif "Floors" in sens_mode:
                 st.session_state["mask_level"] = 2
             else:
-                # Optimized falls back to the smart heuristics (None)
-                st.session_state["mask_level"] = None 
+                # Small Objects (Precision Mode)
+                st.session_state["mask_level"] = 1 
 
         # Painting Mode Control
         st.divider()
-        st.caption("🖌️ Painting Mode")
+        st.subheader("🖌️ Paint Mode")
         
+        # --- NEW: Active Color Indicator ---
+        # Show the user exactly what color they are holding
+        active_color = st.session_state.get("picked_color", "#FFFFFF")
+        st.markdown(
+            f"""
+            <div style="
+                display: flex; 
+                align-items: center; 
+                gap: 10px; 
+                padding: 10px; 
+                background: #f0f2f6; 
+                border-radius: 8px; 
+                margin-bottom: 10px;
+                border: 1px solid #dcdcdc;
+            ">
+                <div style="
+                    width: 30px; 
+                    height: 30px; 
+                    background-color: {active_color}; 
+                    border-radius: 50%; 
+                    border: 2px solid white; 
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                "></div>
+                <div style="font-weight: 600; font-size: 0.95rem; color: #31333F;">
+                    Active Paint <span style="font-weight: normal; font-size: 0.8rem; color: #666;">({active_color})</span>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
         # Only show Refine option if there are layers
         options = ["New Object"]
         if st.session_state["masks"]:
             options.append("Refine Last Layer")
             
-        mode = st.radio("Mode", options, index=0, label_visibility="collapsed")
+        mode = st.radio("Action", options, index=0, label_visibility="collapsed", key="paint_mode_radio")
         st.session_state["paint_mode"] = mode
         
         if mode == "Refine Last Layer":
             refine_type = st.radio(
-                "Action", 
+                "Refine Action", 
                 ["Add Area (Include)", "Subtract Area (Exclude)"], 
                 index=1, # Default to subtract as per user request
                 horizontal=True
             )
             st.session_state["refine_type"] = 1 if "Add" in refine_type else 0
             st.info(f"Click on the image to {refine_type.split(' ')[0]} that area.")
+        else:
+            st.caption("👈 **Select a color** above, then click any object in the image to paint it.")
 
         # --- SYSTEM RECOVERY ---
         with st.sidebar.expander("🛠️ System Sync"):

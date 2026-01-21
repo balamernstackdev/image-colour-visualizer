@@ -77,7 +77,15 @@ class SegmentationEngine:
         # Select best mask
         if level is not None and 0 <= level < 3:
             # User forced a specific level
-            best_mask = masks[level]
+            if level == 1:
+                # "Small Objects" mode needs the finest granularity (Index 0)
+                best_mask = masks[0]
+            elif level == 0:
+                # "Walls" mode: Reverted to Mask 0 (Detail) for Separation.
+                # We use post-processing Healing to fix fragmentation.
+                best_mask = masks[0]
+            else:
+                best_mask = masks[level]
         else:
             # Heuristic: Favor 'Sub-segment' (Index 1) for architectural surfaces.
             if scores[1] > 0.70: 
@@ -130,19 +138,20 @@ class SegmentationEngine:
                     # 3. Hybrid Thresholding (ADAPTIVE BASED ON MODE)
                     if level == 2: # "Whole Object" 
                         valid_mask = np.ones((h, w), dtype=np.uint8)
-                    elif level == 0: # "Fine Detail" (NOW DEFAULT) - SURGICAL
-                        # Relax intensity heavily (90->120, 130->180) to allow painting over bright lights
-                        # We rely on strict chroma (28) and edge barriers to stop leaks.
+                    elif level == 0: # "Walls" 
+                        # We use Mask 0 + Healing Strategy.
+                        # Strict thresholds so the Closing step doesn't bridge neighbors.
                         if is_grayscale_seed:
                             valid_mask = (intensity_dist < 120).astype(np.uint8)
                         else:
-                            valid_mask = ((chroma_dist < 28) & (intensity_dist < 180)).astype(np.uint8)
-                    else: # "Optimized" - BALANCED
-                        # Consistent relaxation for fallback mode
+                            # Chroma < 40 ensures we don't bleed during Closing
+                            valid_mask = ((chroma_dist < 40) & (intensity_dist < 180)).astype(np.uint8)
+                    else: # "Small Objects" (Precision Mode - level 1)
+                        # Strict thresholds to prevent bleeding into walls
                         if is_grayscale_seed:
-                            valid_mask = (intensity_dist < 130).astype(np.uint8)
+                             valid_mask = (intensity_dist < 80).astype(np.uint8)
                         else:
-                            valid_mask = ((chroma_dist < 30) & (intensity_dist < 190)).astype(np.uint8)
+                             valid_mask = ((chroma_dist < 25) & (intensity_dist < 120)).astype(np.uint8)
 
                     # --- ULTRA-PRECISION EDGE GUARD (MODE-SENSITIVE) ---
                     if level == 2:
@@ -152,11 +161,15 @@ class SegmentationEngine:
                         mask_refined = (mask_refined & valid_mask)
                         edge_barrier = np.ones((h, w), dtype=np.uint8)
                     else:
-                        # Sharpened blur (9x9 -> 5x5) to catch Cabinet & Cornice lines in Auto-Detect
+                        # Blur Strategy
                         if level == 0:
+                             # Moderate blur is enough, Closing handles the texture
                              k_size = (9, 9)
+                             e_thresh = 50 
                         else:
-                             k_size = (9, 9)
+                             # Sharp blur for small objects to respect edges
+                             k_size = (5, 5)
+                             e_thresh = 50
                         
                         edge_gray = cv2.GaussianBlur(cv2.cvtColor(self.image_rgb, cv2.COLOR_RGB2GRAY), k_size, 0)
                         
@@ -170,24 +183,51 @@ class SegmentationEngine:
                         abs_laplacian = cv2.convertScaleAbs(laplacian)
                         edges = cv2.addWeighted(sobel_edges, 0.7, abs_laplacian, 0.3, 0)
                         
-                        # Fine Detail matches Optimized at 45
-                        e_thresh = 45 
                         _, edge_barrier = cv2.threshold(edges, e_thresh, 255, cv2.THRESH_BINARY_INV)
                         edge_barrier = (edge_barrier / 255).astype(np.uint8)
                         
                         # Robust barrier thickening
-                        edge_barrier = cv2.erode(edge_barrier, np.ones((3, 3), np.uint8), iterations=2)
+                        edge_barrier = cv2.erode(edge_barrier, np.ones((3, 3), np.uint8), iterations=1)
                         
                         # SAFETY Zone around click (ensure paint starts smoothly)
-                        cv2.circle(edge_barrier, (cx, cy), 15, 1, -1)
+                        # Reduced radius 15->5 to prevent bridging gaps near edges
+                        cv2.circle(edge_barrier, (cx, cy), 5, 1, -1)
 
                     # Intersect SAM mask with Adaptive Boundaries
                     if level != 2:
                         mask_refined = (mask_uint8 & valid_mask & edge_barrier)
+                        
+                        # --- TEXTURE HEALING (For Walls Only) ---
+                        # Use Morphological Closing to fuse texture holes while keeping edge separation.
+                        if level == 0:
+                            # Using slightly larger 9x9 kernel for stronger fusion
+                            h_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+                            mask_refined = cv2.morphologyEx(mask_refined, cv2.MORPH_CLOSE, h_kernel)
                     else:
                         mask_refined = mask_uint8 # For level 2, valid_mask is all ones, edge_barrier is all ones.
                     
-                    # --- LEAK PROTECTOR: Morphological cleanup to break tiny bridges ---
+                    # --- SMART FILL: Close internal holes (texture gaps) ---
+                    # SKIPPED FOR SMALL OBJECTS (Level 1) to respect details
+                    if level != 1:
+                        # Use contour finding to detect holes inside the mask
+                        contours, hierarchy = cv2.findContours(mask_refined, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+                        
+                        if hierarchy is not None:
+                            # hierarchy shape is (1, N, 4)
+                            for i, cnt in enumerate(contours):
+                                # hierarchy[0][i] = [Next, Previous, First_Child, Parent]
+                                parent_idx = hierarchy[0][i][3]
+                                
+                                # If it has a parent, it is an internal hole
+                                if parent_idx != -1:
+                                    area = cv2.contourArea(cnt)
+                                    # Aggressively fill holes smaller than 1000 pixels (Texture patches)
+                                    # Windows/Vents are usually > 1000px, so they stay open.
+                                    if area < 1000:
+                                        cv2.drawContours(mask_refined, [cnt], -1, 1, thickness=cv2.FILLED)
+
+                    # --- LEAK PROTECTOR: Clean up external noise ---
+                    # 2. Cleanup Noise
                     kernel = np.ones((3, 3), np.uint8)
                     mask_refined = cv2.morphologyEx(mask_refined, cv2.MORPH_OPEN, kernel)
                     
