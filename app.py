@@ -193,9 +193,25 @@ def setup_styles():
 
         /* Whitelabel - Hide Streamlit elements */
         #MainMenu {visibility: hidden;}
-        header {visibility: hidden;}
+        /* header {visibility: hidden;} */
         footer {visibility: hidden;}
-        [data-testid="stHeader"] {display: none;}
+        /* [data-testid="stHeader"] {display: none;} */
+        /* Ensure sidebar toggle is always visible */
+        [data-testid="stSidebarCollapsedControl"] {
+            display: block !important;
+            visibility: visible !important;
+            color: #31333F !important;
+            z-index: 1000002 !important;
+            background-color: rgba(255, 255, 255, 0.5) !important;
+            border-radius: 4px;
+        }
+        
+        [data-testid="stHeader"] {
+            background-color: transparent !important;
+            z-index: 1000001 !important;
+            display: block !important;
+            visibility: visible !important;
+        }
         </style>
     """, unsafe_allow_html=True)
 
